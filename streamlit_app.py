@@ -601,11 +601,55 @@ def main():
             if bn and bc: builder = f"<div style='font-weight:500;color:#F8FAFC'>{esc(bn)}</div><div style='font-size:.65rem;color:#94A3B8'>{esc(bc)}</div>"
             elif bn or bc: builder = f"<span style='font-weight:500;color:#F8FAFC'>{esc(bn or bc)}</span>"
             else: builder = '<span class="empty-cell">—</span>'
-            ph = f"<a href='tel:{esc(p[\"builder_phone\"])}' style='color:#60A5FA;text-decoration:none;font-family:Fira Code,monospace;font-size:.7rem;white-space:nowrap'>{esc(p['builder_phone'])}</a>" if p.get("builder_phone") else '<span class="empty-cell">—</span>'
-            em = f"<a href='mailto:{esc(p[\"builder_email\"])}' style='color:#60A5FA;text-decoration:none;font-size:.7rem'>{esc(p['builder_email'])}</a>" if p.get("builder_email") else '<span class="empty-cell">—</span>'
-            pph = f"<span style='font-family:Fira Code,monospace;font-size:.7rem;color:#94A3B8'>{esc(p['personal_phone'])}</span>" if p.get("personal_phone") else '<span class="empty-cell">—</span>'
-            pem = f"<span style='font-size:.7rem;color:#94A3B8'>{esc(p['personal_email'])}</span>" if p.get("personal_email") else '<span class="empty-cell">—</span>'
-            rows_html += f"<tr{hv_cls}><td style='color:#F8FAFC;font-weight:500;max-width:180px'><div style='overflow:hidden;text-overflow:ellipsis;white-space:nowrap' title='{esc(p.get(\"address\",\"\"))}'>{esc(p.get('address')) or '—'}</div></td><td style='color:#94A3B8;font-size:.7rem'>{esc(p.get('municipality')) or '—'}</td><td>{builder}</td><td>{ph}</td><td>{em}</td><td>{pph}</td><td>{pem}</td><td style='color:#E2E8F0'>{esc(p.get('owner_name')) or '—'}</td><td style='text-align:right;font-family:Fira Code,monospace;font-size:.75rem;{val_style}'>{fmt_money(p.get('project_value'))}</td><td style='font-family:Fira Code,monospace;font-size:.7rem;color:#E2E8F0'>{fmt_date(p.get('inspection_date'))}</td><td style='text-align:center'>{status_badge(p.get('inspection_status'))}</td><td style='text-align:center'>{score_badge(p.get('opportunity_score'))}</td><td style='font-family:Fira Code,monospace;font-size:.65rem;color:#94A3B8'>{esc(p.get('permit_number')) or '—'}</td></tr>"
+            bphone = p.get("builder_phone") or ""
+            bemail = p.get("builder_email") or ""
+            pphone = p.get("personal_phone") or ""
+            pemail = p.get("personal_email") or ""
+            addr = p.get("address") or ""
+            municipality = p.get("municipality") or ""
+            owner = p.get("owner_name") or ""
+            pnum = p.get("permit_number") or ""
+
+            if bphone:
+                ph = f"<a href='tel:{esc(bphone)}' style='color:#60A5FA;text-decoration:none;font-family:Fira Code,monospace;font-size:.7rem;white-space:nowrap'>{esc(bphone)}</a>"
+            else:
+                ph = '<span class="empty-cell">—</span>'
+            if bemail:
+                em = f"<a href='mailto:{esc(bemail)}' style='color:#60A5FA;text-decoration:none;font-size:.7rem'>{esc(bemail)}</a>"
+            else:
+                em = '<span class="empty-cell">—</span>'
+            if pphone:
+                pph = f"<span style='font-family:Fira Code,monospace;font-size:.7rem;color:#94A3B8'>{esc(pphone)}</span>"
+            else:
+                pph = '<span class="empty-cell">—</span>'
+            if pemail:
+                pem = f"<span style='font-size:.7rem;color:#94A3B8'>{esc(pemail)}</span>"
+            else:
+                pem = '<span class="empty-cell">—</span>'
+
+            addr_esc = esc(addr) or "—"
+            muni_esc = esc(municipality) or "—"
+            owner_esc = esc(owner) or "—"
+            pnum_esc = esc(pnum) or "—"
+            value_html = fmt_money(p.get("project_value"))
+            date_html = fmt_date(p.get("inspection_date"))
+            status_html = status_badge(p.get("inspection_status"))
+            score_html = score_badge(p.get("opportunity_score"))
+
+            rows_html += (
+                f"<tr{hv_cls}>"
+                f"<td style='color:#F8FAFC;font-weight:500;max-width:180px'><div style='overflow:hidden;text-overflow:ellipsis;white-space:nowrap' title='{addr_esc}'>{addr_esc}</div></td>"
+                f"<td style='color:#94A3B8;font-size:.7rem'>{muni_esc}</td>"
+                f"<td>{builder}</td>"
+                f"<td>{ph}</td><td>{em}</td><td>{pph}</td><td>{pem}</td>"
+                f"<td style='color:#E2E8F0'>{owner_esc}</td>"
+                f"<td style='text-align:right;font-family:Fira Code,monospace;font-size:.75rem;{val_style}'>{value_html}</td>"
+                f"<td style='font-family:Fira Code,monospace;font-size:.7rem;color:#E2E8F0'>{date_html}</td>"
+                f"<td style='text-align:center'>{status_html}</td>"
+                f"<td style='text-align:center'>{score_html}</td>"
+                f"<td style='font-family:Fira Code,monospace;font-size:.65rem;color:#94A3B8'>{pnum_esc}</td>"
+                f"</tr>"
+            )
 
         watermark = f"background:url('data:image/png;base64,{LOGO_B64}') no-repeat center center;background-size:contain;opacity:0.06;" if LOGO_B64 else ""
         st.markdown(f"""<div style="overflow-x:auto;border-radius:16px;border:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.02);position:relative">
