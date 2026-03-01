@@ -966,39 +966,7 @@ def main():
         if found > 0:
             st.rerun()
 
-    # ── Stats ──
-    stats = get_stats(conn)
-    st.markdown("")
-    sc = st.columns(4)
-    with sc[0]:
-        st.markdown(
-            f'<div class="stat-card"><div class="stat-label">Total Permits</div>'
-            f'<div class="stat-value">{stats["total"]:,}</div></div>',
-            unsafe_allow_html=True,
-        )
-    with sc[1]:
-        st.markdown(
-            f'<div class="stat-card"><div class="stat-label">Avg Value</div>'
-            f'<div class="stat-value">{fmt_money(stats["avg"])}</div></div>',
-            unsafe_allow_html=True,
-        )
-    with sc[2]:
-        st.markdown(
-            f'<div class="stat-card"><div class="stat-label">$300K+ Projects</div>'
-            f'<div class="stat-value-blue">{stats["hv"]:,}</div></div>',
-            unsafe_allow_html=True,
-        )
-    with sc[3]:
-        dr = f'{fmt_date(stats["earliest"])} &mdash; {fmt_date(stats["latest"])}' if stats["earliest"] else "&mdash;"
-        st.markdown(
-            f'<div class="stat-card"><div class="stat-label">Date Range</div>'
-            f'<div style="font-family:Fira Code,monospace;font-size:.85rem;color:#E2E8F0;margin-top:8px">{dr}</div></div>',
-            unsafe_allow_html=True,
-        )
-
-    st.markdown("")
-
-    # ── FOIA Section (TOP — above filters and table) ──
+    # ── FOIA Section (TOP — first thing after header/buttons) ──
     with st.expander("FOIA Requests — Municipalities Without Public Portals", expanded=False):
         st.markdown(
             '<p style="font-size:.8rem;color:#94A3B8;margin-bottom:12px">'
@@ -1028,6 +996,37 @@ def main():
         st.markdown(foia_html, unsafe_allow_html=True)
         st.code(FOIA_BODY, language=None)
         st.caption("Copy the text above and paste it into the FOIA portal request form.")
+
+    st.markdown("")
+
+    # ── Stats ──
+    stats = get_stats(conn)
+    sc = st.columns(4)
+    with sc[0]:
+        st.markdown(
+            f'<div class="stat-card"><div class="stat-label">Total Permits</div>'
+            f'<div class="stat-value">{stats["total"]:,}</div></div>',
+            unsafe_allow_html=True,
+        )
+    with sc[1]:
+        st.markdown(
+            f'<div class="stat-card"><div class="stat-label">Avg Value</div>'
+            f'<div class="stat-value">{fmt_money(stats["avg"])}</div></div>',
+            unsafe_allow_html=True,
+        )
+    with sc[2]:
+        st.markdown(
+            f'<div class="stat-card"><div class="stat-label">$300K+ Projects</div>'
+            f'<div class="stat-value-blue">{stats["hv"]:,}</div></div>',
+            unsafe_allow_html=True,
+        )
+    with sc[3]:
+        dr = f'{fmt_date(stats["earliest"])} &mdash; {fmt_date(stats["latest"])}' if stats["earliest"] else "&mdash;"
+        st.markdown(
+            f'<div class="stat-card"><div class="stat-label">Date Range</div>'
+            f'<div style="font-family:Fira Code,monospace;font-size:.85rem;color:#E2E8F0;margin-top:8px">{dr}</div></div>',
+            unsafe_allow_html=True,
+        )
 
     st.markdown("")
 
@@ -1142,7 +1141,7 @@ def main():
             unsafe_allow_html=True,
         )
 
-        # Build table rows with <details> for expandable sections
+        # Build table rows with expandable detail sections
         rows_html = ""
         for p in result["data"]:
             is_hv = p.get("project_value") and p["project_value"] >= 300000
@@ -1161,19 +1160,23 @@ def main():
             else:
                 builder = '<span class="empty-cell">&mdash;</span>'
 
-            bphone = p.get("builder_phone") or ""
-            bemail = p.get("builder_email") or ""
-            if bphone:
-                ph = (
-                    f'<a href="tel:{esc(bphone)}" style="color:#60A5FA;text-decoration:none;'
-                    f'font-family:Fira Code,monospace;font-size:.7rem;white-space:nowrap">{esc(bphone)}</a>'
+            def _phone_link(num):
+                if not num:
+                    return '<span class="empty-cell">&mdash;</span>'
+                return (
+                    f'<a href="tel:{esc(num)}" style="color:#60A5FA;text-decoration:none;'
+                    f'font-family:Fira Code,monospace;font-size:.7rem;white-space:nowrap">{esc(num)}</a>'
                 )
-            else:
-                ph = '<span class="empty-cell">&mdash;</span>'
-            if bemail:
-                em = f'<a href="mailto:{esc(bemail)}" style="color:#60A5FA;text-decoration:none;font-size:.7rem">{esc(bemail)}</a>'
-            else:
-                em = '<span class="empty-cell">&mdash;</span>'
+
+            def _email_link(addr):
+                if not addr:
+                    return '<span class="empty-cell">&mdash;</span>'
+                return f'<a href="mailto:{esc(addr)}" style="color:#60A5FA;text-decoration:none;font-size:.7rem">{esc(addr)}</a>'
+
+            biz_ph = _phone_link(p.get("builder_phone"))
+            biz_em = _email_link(p.get("builder_email"))
+            per_ph = _phone_link(p.get("personal_phone"))
+            per_em = _email_link(p.get("personal_email"))
 
             addr_esc = esc(p.get("address") or "") or "&mdash;"
             muni_esc = esc(p.get("municipality") or "") or "&mdash;"
@@ -1182,6 +1185,7 @@ def main():
             date_html = fmt_date(p.get("inspection_date"))
             score_html = score_badge(p.get("opportunity_score"))
             status_html = status_badge(p.get("inspection_status"))
+            pnum_esc = esc(p.get("permit_number") or "") or "&mdash;"
 
             # Build detail panel
             detail_html = build_detail_panel(p)
@@ -1193,15 +1197,18 @@ def main():
                 f"<div style='overflow:hidden;text-overflow:ellipsis;white-space:nowrap' title='{addr_esc}'>{addr_esc}</div></td>"
                 f"<td style='color:#94A3B8;font-size:.7rem'>{muni_esc}</td>"
                 f"<td>{builder}</td>"
-                f"<td>{ph}</td>"
-                f"<td>{em}</td>"
+                f"<td>{biz_ph}</td>"
+                f"<td>{biz_em}</td>"
+                f"<td>{per_ph}</td>"
+                f"<td>{per_em}</td>"
                 f"<td style='color:#E2E8F0'>{owner_esc}</td>"
                 f"<td style='text-align:right;font-family:Fira Code,monospace;font-size:.75rem;{val_style}'>{value_html}</td>"
                 f"<td style='font-family:Fira Code,monospace;font-size:.7rem;color:#E2E8F0'>{date_html}</td>"
                 f"<td style='text-align:center'>{status_html}</td>"
                 f"<td style='text-align:center'>{score_html}</td>"
+                f"<td style='font-family:Fira Code,monospace;font-size:.65rem;color:#94A3B8'>{pnum_esc}</td>"
                 f"</tr>"
-                f"<tr style='display:none'><td colspan='10' style='padding:0;border:none'>{detail_html}</td></tr>"
+                f"<tr style='display:none'><td colspan='13' style='padding:0;border:none'>{detail_html}</td></tr>"
             )
 
         watermark = ""
@@ -1218,9 +1225,12 @@ def main():
             f'width:400px;height:400px;{watermark}pointer-events:none;z-index:0"></div>'
             f'<table class="permit-table" style="position:relative;z-index:1"><thead><tr>'
             f'<th>Address</th><th>Municipality</th><th>Builder</th>'
-            f'<th>Biz Phone</th><th>Biz Email</th><th>Owner</th>'
+            f'<th>Biz Phone</th><th>Biz Email</th>'
+            f'<th>Personal Phone</th><th>Personal Email</th>'
+            f'<th>Owner</th>'
             f'<th style="text-align:right">Value</th><th>Date</th>'
             f'<th style="text-align:center">Status</th><th style="text-align:center">Score</th>'
+            f'<th>Permit #</th>'
             f'</tr></thead><tbody>{rows_html}</tbody></table></div>'
         )
         st.markdown(table_html, unsafe_allow_html=True)
