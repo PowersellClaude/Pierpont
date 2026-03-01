@@ -5,6 +5,7 @@ const config = require('./config');
 const db = require('./db/init');
 const scraper = require('./scraper/index');
 const drywallScanner = require('./scraper/drywall-scanner');
+const builderLookup = require('./scraper/builderLookup');
 
 const app = express();
 app.use(express.json());
@@ -26,11 +27,32 @@ app.get('/api/permits/:id', async (req, res) => {
 
 // ─── Scraper API ─────────────────────────────────────────────────────────────
 let scrapeInProgress = false;
+let builderLookupInProgress = false;
+let builderLookupStatus = null;
+
+async function runBuilderLookupAfterScrape() {
+  if (builderLookupInProgress) return;
+  builderLookupInProgress = true;
+  builderLookupStatus = { status: 'starting', total: 0, processed: 0 };
+  try {
+    await builderLookup.bulkLookupBuilders(db, (status) => { builderLookupStatus = status; });
+  } catch (err) {
+    console.error('Builder lookup error:', err);
+    builderLookupStatus = { status: 'error', error: err.message };
+  } finally {
+    builderLookupInProgress = false;
+  }
+}
+
 app.post('/api/scrape', async (req, res) => {
   if (scrapeInProgress) return res.status(409).json({ error: 'Scrape already in progress', status: scraper.getStatus() });
   scrapeInProgress = true;
   res.json({ message: 'Scrape started', status: 'running' });
-  try { await scraper.runAllScrapers(req.body || {}); }
+  try {
+    await scraper.runAllScrapers(req.body || {});
+    // Auto-run builder lookup after scrape completes
+    runBuilderLookupAfterScrape();
+  }
   catch (err) { console.error('Scrape error:', err); }
   finally { scrapeInProgress = false; }
 });
@@ -41,7 +63,10 @@ app.post('/api/scrape/test', async (req, res) => {
   scrapeInProgress = true;
   const limit = parseInt(req.body?.limit) || 5;
   res.json({ message: `Test scrape started (limit: ${limit})`, status: 'running' });
-  try { await scraper.runAllScrapers({ testLimit: limit }); }
+  try {
+    await scraper.runAllScrapers({ testLimit: limit });
+    runBuilderLookupAfterScrape();
+  }
   catch (err) { console.error('Test scrape error:', err); }
   finally { scrapeInProgress = false; }
 });
@@ -112,9 +137,9 @@ app.get('/api/stats', async (req, res) => {
 app.get('/api/export/csv', async (req, res) => {
   try {
     const permits = await db.getAllPermitsForExport(req.query);
-    const headers = ['Permit Number','Address','Municipality','Builder Name','Builder Company','Builder Phone','Builder Email','Applicant Name','Applicant Phone','Applicant Email','Owner Name','Project Value','Permit Type','Inspection Type','Inspection Date','Inspection Status','Permit Issue Date','Opportunity Score','Source URL','Scraped At'];
+    const headers = ['Permit Number','Address','Municipality','Builder Name','Builder Company','Builder Phone','Builder Email','Builder Website','Personal Phone','Personal Email','Applicant Name','Applicant Phone','Applicant Email','Owner Name','Project Value','Permit Type','Inspection Type','Inspection Date','Inspection Status','Permit Issue Date','Opportunity Score','Source URL','Scraped At'];
     const esc = (v) => { if (v == null) return ''; const s = String(v); return (s.includes(',') || s.includes('"') || s.includes('\n')) ? `"${s.replace(/"/g, '""')}"` : s; };
-    const rows = permits.map(p => [p.permit_number,p.address,p.municipality,p.builder_name,p.builder_company,p.builder_phone,p.builder_email,p.applicant_name,p.applicant_phone,p.applicant_email,p.owner_name,p.project_value,p.permit_type,p.inspection_type,p.inspection_date,p.inspection_status,p.permit_issue_date,p.opportunity_score,p.source_url,p.scraped_at].map(esc).join(','));
+    const rows = permits.map(p => [p.permit_number,p.address,p.municipality,p.builder_name,p.builder_company,p.builder_phone,p.builder_email,p.builder_website,p.personal_phone,p.personal_email,p.applicant_name,p.applicant_phone,p.applicant_email,p.owner_name,p.project_value,p.permit_type,p.inspection_type,p.inspection_date,p.inspection_status,p.permit_issue_date,p.opportunity_score,p.source_url,p.scraped_at].map(esc).join(','));
     const csv = [headers.join(','), ...rows].join('\n');
     const today = new Date().toISOString().split('T')[0];
     res.setHeader('Content-Type', 'text/csv');
@@ -149,6 +174,52 @@ app.delete('/api/clear', async (req, res) => {
     await db.clearAllData();
     res.json({ message: 'All data cleared' });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── Builder Lookup API ──────────────────────────────────────────────────────
+app.post('/api/builder-lookup/run', async (req, res) => {
+  if (builderLookupInProgress) return res.status(409).json({ error: 'Builder lookup already in progress', status: builderLookupStatus });
+  res.json({ message: 'Builder lookup started' });
+  runBuilderLookupAfterScrape();
+});
+
+app.get('/api/builder-lookup/status', (req, res) => {
+  res.json({ running: builderLookupInProgress, ...(builderLookupStatus || { status: 'idle' }) });
+});
+
+app.post('/api/permits/:id/lookup-builder', async (req, res) => {
+  try {
+    const permit = await db.getPermitById(req.params.id);
+    if (!permit) return res.status(404).json({ error: 'Permit not found' });
+
+    const companyName = permit.builder_company || permit.builder_name;
+    if (!companyName) return res.status(400).json({ error: 'No builder name or company on this permit' });
+
+    const result = await builderLookup.lookupBuilder(companyName);
+
+    // Update DB with found info (only overwrite if we found something and field was empty)
+    const updates = {};
+    if (result.phone && !permit.builder_phone) updates.phone = result.phone;
+    if (result.email && !permit.builder_email) updates.email = result.email;
+    if (result.website) updates.website = result.website;
+
+    if (Object.keys(updates).length > 0) {
+      await db.updateBuilderContact(permit.id, updates);
+    }
+
+    res.json({
+      success: true,
+      website: result.website,
+      phone: result.phone,
+      email: result.email,
+      allPhones: result.allPhones || [],
+      allEmails: result.allEmails || [],
+      updated: updates,
+    });
+  } catch (err) {
+    console.error('Builder lookup error:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ─── Future placeholders ─────────────────────────────────────────────────────

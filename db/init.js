@@ -75,6 +75,21 @@ function initSchema() {
   } catch (e) {
     // Column already exists — ignore
   }
+
+  // Migration: add builder_website column if it doesn't exist
+  try {
+    db.run(`ALTER TABLE permits ADD COLUMN builder_website TEXT`);
+  } catch (e) {
+    // Column already exists — ignore
+  }
+
+  // Migration: add personal contact columns for skip-trace API (future)
+  try {
+    db.run(`ALTER TABLE permits ADD COLUMN personal_phone TEXT`);
+  } catch (e) {}
+  try {
+    db.run(`ALTER TABLE permits ADD COLUMN personal_email TEXT`);
+  } catch (e) {}
   db.run(`CREATE INDEX IF NOT EXISTS idx_opportunity_score ON permits(opportunity_score)`);
 
   db.run(`
@@ -279,6 +294,30 @@ async function getDistinctValues() {
   };
 }
 
+// ─── Builder contact lookup ─────────────────────────────────────────────────
+async function updateBuilderContact(id, data) {
+  await getDb();
+  const fields = [];
+  const vals = [];
+  if (data.phone) { fields.push('builder_phone = ?'); vals.push(data.phone); }
+  if (data.email) { fields.push('builder_email = ?'); vals.push(data.email); }
+  if (data.website) { fields.push('builder_website = ?'); vals.push(data.website); }
+  if (data.personal_phone) { fields.push('personal_phone = ?'); vals.push(data.personal_phone); }
+  if (data.personal_email) { fields.push('personal_email = ?'); vals.push(data.personal_email); }
+  if (fields.length === 0) return;
+  vals.push(id);
+  execute(`UPDATE permits SET ${fields.join(', ')} WHERE id = ?`, vals);
+}
+
+async function getPermitsNeedingLookup() {
+  await getDb();
+  return queryAll(`SELECT id, builder_name, builder_company, builder_phone, builder_email, builder_website
+    FROM permits
+    WHERE (builder_company IS NOT NULL AND builder_company != '')
+      AND (builder_website IS NULL OR builder_website = '')
+    ORDER BY opportunity_score DESC`);
+}
+
 // ─── Drywall opportunities ──────────────────────────────────────────────────
 async function updateDrywallOpportunity(permitNumber, data) {
   await getDb();
@@ -328,4 +367,4 @@ async function clearAllData() {
   try { if (fs.existsSync(seenFile)) fs.unlinkSync(seenFile); } catch (e) {}
 }
 
-module.exports = { getDb, upsertPermit, queryPermits, getPermitById, getStats, getAllPermitsForExport, getDistinctValues, updateDrywallOpportunity, getOpportunities, backfillOpportunityScores, createScrapeRun, updateScrapeRun, getLatestScrapeRun, clearAllData, close };
+module.exports = { getDb, upsertPermit, queryPermits, getPermitById, getStats, getAllPermitsForExport, getDistinctValues, updateBuilderContact, getPermitsNeedingLookup, updateDrywallOpportunity, getOpportunities, backfillOpportunityScores, createScrapeRun, updateScrapeRun, getLatestScrapeRun, clearAllData, close };

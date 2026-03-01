@@ -53,6 +53,11 @@
             <span id="scrapeIcon">&#x1f504;</span>
             <span id="scrapeText">Run Scraper</span>
           </button>
+          <button id="btnLookup" onclick="startBuilderLookup()"
+            class="flex items-center gap-2 bg-purple-500 hover:bg-purple-600 text-white font-semibold py-2 px-4 rounded-lg shadow transition-colors text-sm">
+            <span id="lookupIcon">&#x1f50d;</span>
+            <span id="lookupText">Lookup Builders</span>
+          </button>
         </div>
       </div>
     </div>
@@ -175,8 +180,10 @@
               <th class="sort-header px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase" onclick="sortBy('address')">Address<span class="sort-arrow" id="sort-address">&#x25B2;</span></th>
               <th class="sort-header px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase" onclick="sortBy('municipality')">Municipality<span class="sort-arrow" id="sort-municipality">&#x25B2;</span></th>
               <th class="sort-header px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase" onclick="sortBy('builder_name')">Builder (Applicant)<span class="sort-arrow" id="sort-builder_name">&#x25B2;</span></th>
-              <th class="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Phone</th>
-              <th class="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Email</th>
+              <th class="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Biz Phone</th>
+              <th class="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Biz Email</th>
+              <th class="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Personal Phone</th>
+              <th class="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Personal Email</th>
               <th class="sort-header px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase" onclick="sortBy('owner_name')">Owner<span class="sort-arrow" id="sort-owner_name">&#x25B2;</span></th>
               <th class="sort-header px-3 py-3 text-right text-xs font-semibold text-gray-600 uppercase" onclick="sortBy('project_value')">Value<span class="sort-arrow" id="sort-project_value">&#x25B2;</span></th>
               <th class="sort-header px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase" onclick="sortBy('inspection_date')">Date<span class="sort-arrow" id="sort-inspection_date">&#x25B2;</span></th>
@@ -187,7 +194,7 @@
             </tr>
           </thead>
           <tbody id="permitsTableBody">
-            <tr><td colspan="12" class="px-6 py-12 text-center text-gray-400">
+            <tr><td colspan="14" class="px-6 py-12 text-center text-gray-400">
               <div class="text-4xl mb-2">&#x1f50d;</div>
               <div class="text-lg font-medium">No permits loaded</div>
               <div class="text-sm mt-1">Click "Run Scraper" to fetch permits from SC Lowcountry portals.</div>
@@ -365,11 +372,48 @@ async function loadStats() {
   } catch (e) { console.error(e); }
 }
 
+// ── Builder Lookup ────
+async function lookupBuilder(permitId, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Searching...';
+  btn.classList.add('opacity-50');
+  try {
+    const resp = await fetch(`/api/permits/${permitId}/lookup-builder`, { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok) { alert(data.error || 'Lookup failed'); return; }
+
+    // Update the row inline
+    const phoneCell = document.getElementById(`phone-${permitId}`);
+    const emailCell = document.getElementById(`email-${permitId}`);
+    const websiteCell = document.getElementById(`website-${permitId}`);
+
+    if (data.phone && phoneCell) phoneCell.innerHTML = phone(data.phone);
+    if (data.email && emailCell) emailCell.innerHTML = email(data.email);
+    if (data.website && websiteCell) {
+      const host = new URL(data.website).hostname.replace(/^www\./, '');
+      websiteCell.innerHTML = `<a href="${esc(data.website)}" target="_blank" class="text-blue-600 hover:underline text-xs" onclick="event.stopPropagation()">${esc(host)}</a>`;
+    }
+
+    if (data.phone || data.email || data.website) {
+      btn.textContent = 'Found!';
+      btn.classList.replace('bg-purple-100', 'bg-green-100');
+      btn.classList.replace('text-purple-700', 'text-green-700');
+    } else {
+      btn.textContent = 'Not found';
+      btn.classList.replace('bg-purple-100', 'bg-gray-100');
+      btn.classList.replace('text-purple-700', 'text-gray-500');
+    }
+  } catch (err) {
+    console.error(err);
+    btn.textContent = 'Error';
+  }
+}
+
 // ── Table ────
 function renderTable(permits) {
   const tbody = document.getElementById('permitsTableBody');
   if (!permits||!permits.length) {
-    tbody.innerHTML = `<tr><td colspan="12" class="px-6 py-12 text-center text-gray-400"><div class="text-4xl mb-2">&#x1f4ed;</div><div class="text-lg font-medium">No permits found</div><div class="text-sm mt-1">Try adjusting filters or run the scraper.</div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="14" class="px-6 py-12 text-center text-gray-400"><div class="text-4xl mb-2">&#x1f4ed;</div><div class="text-lg font-medium">No permits found</div><div class="text-sm mt-1">Try adjusting filters or run the scraper.</div></td></tr>`;
     return;
   }
   tbody.innerHTML = '';
@@ -384,7 +428,7 @@ function renderTable(permits) {
       const raw = typeof p.raw_data === 'string' ? JSON.parse(p.raw_data) : p.raw_data;
       const caseId = raw?.CaseId || raw?.Id || raw?.InspectionId;
       if (caseId) {
-        const detailUrl = raw?._detailUrl || `${ENERGOV_BASE}#/inspection/${caseId}`;
+        const detailUrl = raw?._detailUrl || `${ENERGOV_BASE}#/inspectionDetail/inspection/${caseId}`;
         detailLink = `<a href="${esc(detailUrl)}" target="_blank" class="text-blue-600 hover:underline text-xs" onclick="event.stopPropagation()">View</a>`;
       }
     } catch(e) {}
@@ -402,8 +446,10 @@ function renderTable(permits) {
       <td class="px-3 py-2 font-medium text-gray-900 max-w-xs truncate" title="${esc(p.address)}">${esc(p.address)||'<span class="empty-cell">&mdash;</span>'}</td>
       <td class="px-3 py-2 text-gray-600 text-xs">${esc(p.municipality)||'<span class="empty-cell">&mdash;</span>'}</td>
       <td class="px-3 py-2">${builderDisplay}</td>
-      <td class="px-3 py-2">${phone(p.builder_phone)}</td>
-      <td class="px-3 py-2">${email(p.builder_email)}</td>
+      <td class="px-3 py-2" id="phone-${p.id}">${phone(p.builder_phone)}</td>
+      <td class="px-3 py-2" id="email-${p.id}">${email(p.builder_email)}</td>
+      <td class="px-3 py-2 text-gray-400 text-xs" id="pphone-${p.id}">${phone(p.personal_phone)}</td>
+      <td class="px-3 py-2 text-gray-400 text-xs" id="pemail-${p.id}">${email(p.personal_email)}</td>
       <td class="px-3 py-2 text-gray-700">${esc(p.owner_name)||'<span class="empty-cell">&mdash;</span>'}</td>
       <td class="px-3 py-2 text-right font-medium${isHighValue ? ' text-amber-600' : ''}">${p.project_value?fmtCurrency(p.project_value):'<span class="empty-cell">&mdash;</span>'}</td>
       <td class="px-3 py-2 text-gray-700">${fmtDateShort(p.inspection_date)||'<span class="empty-cell">&mdash;</span>'}</td>
@@ -436,7 +482,7 @@ function renderTable(permits) {
     } catch(e) {}
 
     const dr = document.createElement('tr'); dr.id=`d-${p.id}`; dr.className='detail-row bg-blue-50';
-    dr.innerHTML = `<td colspan="12" class="px-6 py-4"><div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+    dr.innerHTML = `<td colspan="14" class="px-6 py-4"><div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
       <div><span class="text-gray-500 text-xs block">Permit #</span><span class="font-medium">${esc(p.permit_number)||'&mdash;'}</span></div>
       <div><span class="text-gray-500 text-xs block">Linked Building Permit</span><span class="font-medium">${linkedPermitHtml}</span></div>
       <div><span class="text-gray-500 text-xs block">Opportunity Score</span><span class="font-medium">${scoreBadge(p.opportunity_score)} ${dataSourceHtml}</span></div>
@@ -446,6 +492,8 @@ function renderTable(permits) {
       <div class="md:col-span-2"><span class="text-gray-500 text-xs block">All Contacts</span><span class="font-medium text-xs leading-relaxed">${subsHtml}</span></div>
       <div><span class="text-gray-500 text-xs block">Issue Date</span><span class="font-medium">${fmtDateShort(p.permit_issue_date)||'&mdash;'}</span></div>
       <div><span class="text-gray-500 text-xs block">Scraped</span><span class="font-medium">${p.scraped_at?new Date(p.scraped_at+'Z').toLocaleString():'&mdash;'}</span></div>
+      <div><span class="text-gray-500 text-xs block">Website</span><span class="font-medium" id="website-${p.id}">${p.builder_website ? `<a href="${esc(p.builder_website)}" target="_blank" class="text-blue-600 hover:underline text-xs" onclick="event.stopPropagation()">${esc((() => { try { return new URL(p.builder_website).hostname.replace(/^www\\./, ''); } catch { return p.builder_website; } })())}</a>` : '&mdash;'}</span></div>
+      <div><span class="text-gray-500 text-xs block">Builder Lookup</span>${(p.builder_company || p.builder_name) ? `<button onclick="event.stopPropagation(); lookupBuilder(${p.id}, this)" class="mt-1 px-3 py-1 text-xs font-medium rounded-full bg-purple-100 text-purple-700 hover:bg-purple-200 transition-colors">Lookup Contact Info</button>` : '<span class="text-gray-400 text-xs">No builder info</span>'}</div>
     </div></td>`;
     tbody.appendChild(dr);
   });
@@ -493,11 +541,44 @@ async function checkScrapeStatus() {
     document.getElementById('scrapeCountText').textContent=`${s.permits_found||0} found`;
     if (!s.running) {
       clearInterval(scrapeCheckInterval);
-      setTimeout(()=>{document.getElementById('scrapeProgress').classList.add('hidden');resetScrapeBtn();loadFilterOptions();loadPermits();loadStats();},2000);
+      setTimeout(()=>{
+        document.getElementById('scrapeProgress').classList.add('hidden');resetScrapeBtn();loadFilterOptions();loadPermits();loadStats();
+        // Auto-trigger builder lookup status polling (scrape auto-starts it)
+        const lb=document.getElementById('btnLookup');lb.disabled=true;lb.classList.add('opacity-50');
+        document.getElementById('lookupIcon').innerHTML='<svg class="spinner w-4 h-4 inline" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>';
+        document.getElementById('lookupText').textContent='Looking up builders...';
+        lookupCheckInterval=setInterval(checkLookupStatus,3000);
+      },2000);
     }
   } catch(e){}
 }
 function resetScrapeBtn() { const b=document.getElementById('btnScrape');b.disabled=false;b.classList.remove('opacity-50');document.getElementById('scrapeIcon').innerHTML='&#x1f504;';document.getElementById('scrapeText').textContent='Run Scraper'; }
+
+// ── Builder Lookup ────
+let lookupCheckInterval;
+async function startBuilderLookup() {
+  const btn=document.getElementById('btnLookup');
+  btn.disabled=true; btn.classList.add('opacity-50');
+  document.getElementById('lookupIcon').innerHTML='<svg class="spinner w-4 h-4 inline" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>';
+  document.getElementById('lookupText').textContent='Looking up...';
+  try { await fetch('/api/builder-lookup/run',{method:'POST'}); lookupCheckInterval=setInterval(checkLookupStatus,3000); }
+  catch(e) { resetLookupBtn(); }
+}
+
+async function checkLookupStatus() {
+  try {
+    const s=await(await fetch('/api/builder-lookup/status')).json();
+    if (s.running) {
+      document.getElementById('lookupText').textContent=`${s.processed||0}/${s.total||0} builders`;
+    } else {
+      clearInterval(lookupCheckInterval);
+      document.getElementById('lookupText').textContent=s.found!=null?`Done! ${s.found} found`:'Done!';
+      setTimeout(()=>{resetLookupBtn();loadPermits();},3000);
+    }
+  } catch(e){}
+}
+
+function resetLookupBtn() { const b=document.getElementById('btnLookup');b.disabled=false;b.classList.remove('opacity-50');document.getElementById('lookupIcon').innerHTML='&#x1f50d;';document.getElementById('lookupText').textContent='Lookup Builders'; }
 
 // ── Export ────
 function exportCSV() {
