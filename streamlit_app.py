@@ -15,8 +15,14 @@ import base64
 import time
 import logging
 from datetime import datetime, timedelta
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from html import escape as html_escape
+
+try:
+    from bs4 import BeautifulSoup
+    HAS_BS4 = True
+except ImportError:
+    HAS_BS4 = False
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("pierpont")
@@ -307,6 +313,257 @@ def enrich_permit(session, permit):
     return enriched
 
 
+# ─── Builder Web Lookup (Python port of builderLookup.js) ─────────────────
+SKIP_DOMAINS = [
+    "yelp.com", "bbb.org", "facebook.com", "instagram.com", "twitter.com",
+    "linkedin.com", "yellowpages.com", "angi.com", "angieslist.com",
+    "homeadvisor.com", "thumbtack.com", "houzz.com", "buildzoom.com",
+    "manta.com", "mapquest.com", "google.com", "bing.com", "youtube.com",
+    "pinterest.com", "nextdoor.com", "porch.com", "chamberofcommerce.com",
+    "dnb.com", "buzzfile.com", "bloomberg.com", "zoominfo.com",
+    "tiktok.com", "reddit.com", "wikipedia.org", "amazon.com",
+    "duckduckgo.com", "apple.com", "x.com", "bizapedia.com",
+    "opencorporates.com", "sec.gov", "companieslist.co",
+    "newhomesource.com", "newhomeguide.com", "zillow.com",
+    "realtor.com", "redfin.com", "trulia.com",
+]
+
+JUNK_EMAIL_PATTERNS = [
+    "example.com", "sentry.io", "wixpress", "wix.com", "squarespace",
+    "wordpress.com", "w3.org", "schema.org", "googleapis.com", "gstatic.com",
+    "gravatar.com", "cloudflare", ".png", ".jpg", ".svg", ".gif", ".webp",
+    "noreply", "no-reply", "mailer-daemon", "postmaster@", "user@domain",
+    "test@", "admin@", "webmaster@", "hostmaster@", "abuse@",
+]
+
+PHONE_RE = re.compile(r'(?:\+1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}')
+EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}')
+
+WEB_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+
+
+def _is_valid_phone(p):
+    cleaned = re.sub(r'[^\d]', '', p)
+    if len(cleaned) == 11 and cleaned.startswith('1'):
+        cleaned = cleaned[1:]
+    if len(cleaned) != 10:
+        return False
+    if re.match(r'^(\d)\1{9}$', cleaned):
+        return False
+    if cleaned[:3] in ('000', '111', '555'):
+        return False
+    return True
+
+
+def _is_valid_email(e):
+    lower = e.lower()
+    if any(pat in lower for pat in JUNK_EMAIL_PATTERNS):
+        return False
+    if len(lower) > 50:
+        return False
+    if not re.match(r'^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$', lower):
+        return False
+    local = lower.split('@')[0]
+    digits = re.sub(r'[^\d]', '', local)
+    if len(digits) >= 7:
+        return False
+    return True
+
+
+def _extract_contacts_from_html(html_text):
+    """Extract phones and emails from HTML using BeautifulSoup."""
+    phones = set()
+    emails = set()
+
+    if not HAS_BS4 or not html_text:
+        # Fallback: regex only
+        for m in PHONE_RE.findall(html_text or ""):
+            if _is_valid_phone(m):
+                phones.add(m.strip())
+        for m in EMAIL_RE.findall(html_text or ""):
+            if _is_valid_email(m):
+                emails.add(m.lower())
+        return list(phones), list(emails)
+
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    # 1. tel: links (highest confidence)
+    for a in soup.find_all("a", href=re.compile(r'^tel:', re.I)):
+        tel = re.sub(r'^tel:\s*', '', a.get("href", "")).replace(" ", "")
+        if _is_valid_phone(tel):
+            phones.add(tel)
+
+    # 2. mailto: links (highest confidence)
+    for a in soup.find_all("a", href=re.compile(r'^mailto:', re.I)):
+        mail = re.sub(r'^mailto:\s*', '', a.get("href", "")).split("?")[0].strip().lower()
+        if _is_valid_email(mail):
+            emails.add(mail)
+
+    # 3. Scan footer, header, contact sections
+    for tag in soup.find_all(["script", "style", "noscript", "svg"]):
+        tag.decompose()
+
+    selectors = [
+        "footer", "header", "nav",
+        {"class_": re.compile(r"contact|footer|header|phone|email|info|widget", re.I)},
+        {"id": re.compile(r"contact|footer", re.I)},
+    ]
+    for sel in selectors:
+        if isinstance(sel, str):
+            elements = soup.find_all(sel)
+        else:
+            elements = soup.find_all(True, sel)
+        for el in elements:
+            text = el.get_text(" ", strip=True)
+            for m in PHONE_RE.findall(text):
+                if _is_valid_phone(m):
+                    phones.add(m.strip())
+            for m in EMAIL_RE.findall(text):
+                if _is_valid_email(m):
+                    emails.add(m.lower())
+
+    # 4. Full body fallback if still empty
+    if not phones or not emails:
+        body = soup.find("body")
+        if body:
+            text = body.get_text(" ", strip=True)
+            if not phones:
+                for m in PHONE_RE.findall(text):
+                    if _is_valid_phone(m):
+                        phones.add(m.strip())
+            if not emails:
+                for m in EMAIL_RE.findall(text):
+                    if _is_valid_email(m):
+                        emails.add(m.lower())
+
+    # 5. Raw HTML fallback for tel:/mailto: regex
+    for m in re.findall(r'href=["\']tel:([^"\']+)["\']', html_text, re.I):
+        if _is_valid_phone(m):
+            phones.add(m.strip())
+    for m in re.findall(r'href=["\']mailto:([^"\'?]+)', html_text, re.I):
+        if _is_valid_email(m.strip()):
+            emails.add(m.strip().lower())
+
+    return list(phones), list(emails)
+
+
+def find_company_website(session, company_name):
+    """Search DuckDuckGo HTML for a builder company website."""
+    if not company_name:
+        return None
+    query = f"{company_name} South Carolina"
+    try:
+        resp = session.get(
+            "https://html.duckduckgo.com/html/",
+            params={"q": query},
+            headers={"User-Agent": WEB_UA},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return None
+        # Parse DuckDuckGo HTML results
+        if HAS_BS4:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            for a in soup.select("a.result__a"):
+                href = a.get("href", "")
+                # DDG wraps links — extract real URL
+                if "uddg=" in href:
+                    from urllib.parse import parse_qs, urlparse as _up
+                    qs = parse_qs(_up(href).query)
+                    href = qs.get("uddg", [href])[0]
+                try:
+                    hostname = urlparse(href).hostname
+                    if not hostname:
+                        continue
+                    hostname = hostname.lower()
+                    if any(hostname == d or hostname.endswith("." + d) for d in SKIP_DOMAINS):
+                        continue
+                    if "duckduckgo" in hostname:
+                        continue
+                    return href
+                except Exception:
+                    continue
+        else:
+            # Regex fallback if no bs4
+            for href in re.findall(r'uddg=([^&"]+)', resp.text):
+                from urllib.parse import unquote
+                url = unquote(href)
+                try:
+                    hostname = urlparse(url).hostname
+                    if not hostname:
+                        continue
+                    hostname = hostname.lower()
+                    if any(hostname == d or hostname.endswith("." + d) for d in SKIP_DOMAINS):
+                        continue
+                    return url
+                except Exception:
+                    continue
+    except Exception as e:
+        log.warning(f"DuckDuckGo search failed for '{company_name}': {e}")
+    return None
+
+
+def scrape_website_contacts(session, website_url):
+    """Scrape a builder website for phone/email across multiple pages."""
+    if not website_url:
+        return [], []
+    all_phones = set()
+    all_emails = set()
+    try:
+        base = urlparse(website_url)
+        base_url = f"{base.scheme}://{base.netloc}"
+    except Exception:
+        return [], []
+
+    pages_to_try = [
+        website_url,
+        f"{base_url}/contact",
+        f"{base_url}/contact-us",
+        f"{base_url}/contact.html",
+        f"{base_url}/about",
+        f"{base_url}/about-us",
+    ]
+
+    for page_url in pages_to_try:
+        try:
+            resp = session.get(
+                page_url,
+                headers={"User-Agent": WEB_UA, "Accept": "text/html,application/xhtml+xml"},
+                timeout=10,
+                allow_redirects=True,
+            )
+            if resp.status_code >= 400:
+                continue
+            phones, emails = _extract_contacts_from_html(resp.text)
+            all_phones.update(phones)
+            all_emails.update(emails)
+            # If we found both, no need to keep scraping
+            if all_phones and all_emails:
+                break
+        except Exception:
+            continue
+
+    return list(all_phones), list(all_emails)
+
+
+def lookup_builder_web(session, company_name):
+    """Full builder lookup: search web for company → scrape contact info."""
+    log.info(f"Builder lookup: '{company_name}'")
+    website = find_company_website(session, company_name)
+    if not website:
+        log.info(f"  No website found for '{company_name}'")
+        return {"website": None, "phone": None, "email": None}
+
+    log.info(f"  Found website: {website}")
+    phones, emails = scrape_website_contacts(session, website)
+    log.info(f"  Found {len(phones)} phone(s), {len(emails)} email(s)")
+    return {
+        "website": website,
+        "phone": phones[0] if phones else None,
+        "email": emails[0] if emails else None,
+    }
+
+
 def run_scraper(status_placeholder):
     """Run the EnerGov scraper and save results to SQLite."""
     session = requests.Session()
@@ -351,6 +608,7 @@ def run_scraper(status_placeholder):
 
     status_placeholder.info(f"Found {len(all_permits)} permits. Enriching with contact data...")
 
+    # Phase 1: Enrich from EnerGov building permits (contacts + values)
     enriched_count = 0
     for i, permit in enumerate(all_permits[:100]):
         if i % 5 == 0:
@@ -360,6 +618,44 @@ def run_scraper(status_placeholder):
         all_permits[i] = enrich_permit(session, permit)
         enriched_count += 1
         time.sleep(0.5)
+
+    # Phase 2: Builder web lookup — search DuckDuckGo for company website, scrape phone/email
+    companies_searched = set()
+    company_results = {}  # cache: company_name -> {website, phone, email}
+    builders_with_company = [
+        (i, p) for i, p in enumerate(all_permits)
+        if p.get("builder_company") and not p.get("builder_website")
+    ]
+    if builders_with_company:
+        status_placeholder.info(
+            f"Phase 2: Looking up {len(builders_with_company)} builder websites..."
+        )
+        web_session = requests.Session()
+        for idx, (i, permit) in enumerate(builders_with_company):
+            company = (permit.get("builder_company") or "").strip()
+            if not company:
+                continue
+            if idx % 3 == 0:
+                status_placeholder.info(
+                    f"Builder lookup {idx + 1}/{len(builders_with_company)}: {company[:40]}..."
+                )
+            # Deduplicate: only search each company once
+            if company in company_results:
+                result = company_results[company]
+            elif company not in companies_searched:
+                companies_searched.add(company)
+                result = lookup_builder_web(web_session, company)
+                company_results[company] = result
+                time.sleep(2)  # Rate limit
+            else:
+                continue
+
+            if result.get("website"):
+                all_permits[i]["builder_website"] = result["website"]
+            if result.get("phone") and not all_permits[i].get("builder_phone"):
+                all_permits[i]["builder_phone"] = result["phone"]
+            if result.get("email") and not all_permits[i].get("builder_email"):
+                all_permits[i]["builder_email"] = result["email"]
 
     status_placeholder.info(f"Saving {len(all_permits)} permits to database...")
     conn = get_db()
@@ -375,8 +671,8 @@ def run_scraper(status_placeholder):
                     builder_phone, builder_email, applicant_name, owner_name,
                     project_value, permit_type, inspection_type, inspection_date,
                     inspection_status, permit_issue_date, source_url, raw_data,
-                    opportunity_score, scraped_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                    opportunity_score, builder_website, scraped_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             """, (
                 p.get("permit_number"), p.get("address"), p.get("municipality"),
                 p.get("builder_name"), p.get("builder_company"),
@@ -385,15 +681,17 @@ def run_scraper(status_placeholder):
                 p.get("project_value"), p.get("permit_type"), p.get("inspection_type"),
                 p.get("inspection_date"), p.get("inspection_status"),
                 p.get("permit_issue_date"), p.get("source_url"), p.get("raw_data"),
-                score,
+                score, p.get("builder_website"),
             ))
             new_count += 1
         except Exception as e:
             log.warning(f"DB insert error: {e}")
     conn.commit()
 
+    web_found = sum(1 for r in company_results.values() if r.get("website"))
     status_placeholder.success(
-        f"Scrape complete! {len(all_permits)} permits found, {new_count} saved to database."
+        f"Scrape complete! {len(all_permits)} permits found, {new_count} saved. "
+        f"Builder websites: {web_found}/{len(companies_searched)} found."
     )
     return len(all_permits), new_count
 
@@ -953,18 +1251,88 @@ def main():
         run_scraper_btn = st.button("Run Scraper", type="primary", use_container_width=True)
     with btn_cols[1]:
         export_csv = st.button("Export CSV", use_container_width=True)
+    with btn_cols[2]:
+        lookup_btn = st.button("Lookup Builders", use_container_width=True)
+    with btn_cols[4]:
+        clear_btn = st.button("Clear All Data", use_container_width=True)
     with btn_cols[5]:
         if st.button("Logout", use_container_width=True):
             st.session_state.authenticated = False
             st.rerun()
 
+    # ── Clear All Data (confirmation) ──
+    if clear_btn:
+        if "clear_confirm" not in st.session_state:
+            st.session_state.clear_confirm = 1
+        else:
+            st.session_state.clear_confirm += 1
+
+    if st.session_state.get("clear_confirm", 0) >= 1 and st.session_state.get("clear_confirm", 0) < 3:
+        remaining = 3 - st.session_state.clear_confirm
+        st.warning(f"Click 'Clear All Data' {remaining} more time(s) to confirm deletion of ALL permit data.")
+    elif st.session_state.get("clear_confirm", 0) >= 3:
+        conn.execute("DELETE FROM permits")
+        conn.commit()
+        st.session_state.clear_confirm = 0
+        st.success("All data cleared.")
+        st.rerun()
+
     # ── Scraper Execution ──
     if run_scraper_btn:
+        st.session_state.clear_confirm = 0
         status_box = st.empty()
         with st.spinner("Scraping EnerGov API..."):
             found, saved = run_scraper(status_box)
         if found > 0:
             st.rerun()
+
+    # ── Builder Lookup (bulk — for permits missing website/phone) ──
+    if lookup_btn:
+        st.session_state.clear_confirm = 0
+        status_box = st.empty()
+        with st.spinner("Looking up builder websites..."):
+            web_session = requests.Session()
+            rows = conn.execute(
+                "SELECT id, builder_company, builder_phone, builder_email, builder_website "
+                "FROM permits WHERE builder_company IS NOT NULL AND builder_company != '' "
+                "AND (builder_website IS NULL OR builder_website = '')"
+            ).fetchall()
+            if not rows:
+                status_box.info("All builders already have website data.")
+            else:
+                companies_searched = set()
+                company_results = {}
+                found_count = 0
+                for idx, row in enumerate(rows):
+                    company = row[1].strip()
+                    if not company or company in companies_searched:
+                        continue
+                    companies_searched.add(company)
+                    if idx % 3 == 0:
+                        status_box.info(f"Looking up {idx + 1}/{len(rows)}: {company[:40]}...")
+                    result = lookup_builder_web(web_session, company)
+                    company_results[company] = result
+                    if result.get("website"):
+                        found_count += 1
+                        updates = []
+                        vals = []
+                        updates.append("builder_website = ?")
+                        vals.append(result["website"])
+                        if result.get("phone"):
+                            updates.append("builder_phone = COALESCE(NULLIF(builder_phone, ''), ?)")
+                            vals.append(result["phone"])
+                        if result.get("email"):
+                            updates.append("builder_email = COALESCE(NULLIF(builder_email, ''), ?)")
+                            vals.append(result["email"])
+                        conn.execute(
+                            f"UPDATE permits SET {', '.join(updates)} "
+                            f"WHERE builder_company = ? AND (builder_website IS NULL OR builder_website = '')",
+                            vals + [company],
+                        )
+                    time.sleep(2)
+                conn.commit()
+                status_box.success(f"Builder lookup complete! {found_count}/{len(companies_searched)} companies found.")
+                st.rerun()
 
     # ── FOIA Section (TOP — first thing after header/buttons) ──
     with st.expander("FOIA Requests — Municipalities Without Public Portals", expanded=False):
