@@ -105,7 +105,7 @@ const FOIA_BODY = `To Whom It May Concern,
 
 Pursuant to the South Carolina Freedom of Information Act, I am a taxpaying citizen requesting the following records for research purposes only:
 
-A list of all building permit inspections that received a passing status within the last 90 days, including permit number, address, inspection type, inspection date, and status.
+A list of all strapping inspections (also known as strap/banding inspections) that received a passing status within the last 90 days, including permit number, property address, contractor/builder name, inspection date, and status.
 
 Thank you for your time.`;
 
