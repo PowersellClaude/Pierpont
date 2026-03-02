@@ -98,6 +98,29 @@ STRAPPING_TYPE_ID = "2a1af85e-dcdc-4a9e-b17a-e95e3d92d918"
 PASSED_STATUS_ID = "c0351663-6112-4181-a943-cf58f67c6c9d"
 
 
+# ─── Drywall Profit Opportunity Calculator ────────────────────────────────
+def calculate_drywall_profit(project_value, margin_pct=15.0):
+    """
+    Dynamic logarithmic scaling for drywall revenue estimation.
+    DrywallPercent = 0.12 - ((log10(PermitValue) - 4.7) * 0.022)
+    Clamped between 3% and 12%.
+    """
+    if not project_value or project_value <= 0:
+        return {"drywall_pct": 0, "drywall_revenue": 0, "profit_opportunity": 0}
+    # Clamp permit value to valid range for calculation
+    clamped = max(50000, min(15000000, project_value))
+    drywall_pct = 0.12 - ((math.log10(clamped) - 4.7) * 0.022)
+    drywall_pct = max(0.03, min(0.12, drywall_pct))
+    drywall_revenue = project_value * drywall_pct
+    margin = max(0, min(100, margin_pct))
+    profit_opportunity = drywall_revenue * (margin / 100.0)
+    return {
+        "drywall_pct": drywall_pct,
+        "drywall_revenue": drywall_revenue,
+        "profit_opportunity": profit_opportunity,
+    }
+
+
 # ─── Opportunity Score (matches Node.js version) ───────────────────────────
 def calculate_opportunity_score(project_value, inspection_date, municipality):
     val_score = 0
@@ -563,11 +586,14 @@ def _extract_contacts_from_html(html_text):
     return list(phones), list(emails)
 
 
-def find_company_website(session, company_name):
+def find_company_website(session, company_name, city=None):
     """Search DuckDuckGo HTML for a builder company website."""
     if not company_name:
         return None
-    query = f"{company_name} South Carolina"
+    location = city or "South Carolina"
+    # Strip "City of" / "Town of" prefixes for cleaner search
+    location = re.sub(r'^(City of|Town of|County of)\s+', '', location, flags=re.I)
+    query = f"{company_name} {location} contractor builder"
     try:
         resp = session.get(
             "https://html.duckduckgo.com/html/",
@@ -662,10 +688,10 @@ def scrape_website_contacts(session, website_url):
     return list(all_phones), list(all_emails)
 
 
-def lookup_builder_web(session, company_name):
+def lookup_builder_web(session, company_name, city=None):
     """Full builder lookup: search web for company → scrape contact info."""
-    log.info(f"Builder lookup: '{company_name}'")
-    website = find_company_website(session, company_name)
+    log.info(f"Builder lookup: '{company_name}' in {city or 'SC'}")
+    website = find_company_website(session, company_name, city=city)
     if not website:
         log.info(f"  No website found for '{company_name}'")
         return {"website": None, "phone": None, "email": None}
@@ -760,7 +786,8 @@ def run_scraper(status_placeholder):
                 result = company_results[company]
             elif company not in companies_searched:
                 companies_searched.add(company)
-                result = lookup_builder_web(web_session, company)
+                city = permit.get("municipality")
+                result = lookup_builder_web(web_session, company, city=city)
                 company_results[company] = result
                 time.sleep(2)  # Rate limit
             else:
@@ -1085,7 +1112,7 @@ def query_permits(conn, filters=None, sort_by="opportunity_score", sort_order="D
             else:
                 conditions.append("1=0")
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-    allowed = ["municipality", "address", "builder_name", "project_value", "inspection_date", "opportunity_score", "permit_number"]
+    allowed = ["municipality", "address", "builder_name", "builder_company", "project_value", "inspection_date", "opportunity_score", "permit_number", "builder_website", "builder_phone", "builder_email"]
     if sort_by not in allowed:
         sort_by = "opportunity_score"
     total_row = conn.execute(f"SELECT COUNT(*) FROM permits {where}", values).fetchone()
@@ -1413,7 +1440,7 @@ def main():
         with st.spinner("Looking up builder websites..."):
             web_session = requests.Session()
             rows = conn.execute(
-                "SELECT id, builder_company, builder_phone, builder_email, builder_website "
+                "SELECT id, builder_company, builder_phone, builder_email, builder_website, municipality "
                 "FROM permits WHERE builder_company IS NOT NULL AND builder_company != '' "
                 "AND (builder_website IS NULL OR builder_website = '')"
             ).fetchall()
@@ -1428,9 +1455,10 @@ def main():
                     if not company or company in companies_searched:
                         continue
                     companies_searched.add(company)
+                    city = row[5] if len(row) > 5 else None
                     if idx % 3 == 0:
                         status_box.info(f"Looking up {idx + 1}/{len(rows)}: {company[:40]}...")
-                    result = lookup_builder_web(web_session, company)
+                    result = lookup_builder_web(web_session, company, city=city)
                     company_results[company] = result
                     if result.get("website"):
                         found_count += 1
@@ -1579,16 +1607,41 @@ def main():
         chips_html += '</div>'
         st.markdown(chips_html, unsafe_allow_html=True)
 
+    # ── Profit Margin Input ──
+    st.markdown(
+        '<div style="margin-bottom:4px;font-size:.7rem;font-weight:600;text-transform:uppercase;'
+        'letter-spacing:.06em;color:#94A3B8">Profit Calculator</div>',
+        unsafe_allow_html=True,
+    )
+    margin_col1, margin_col2 = st.columns([1, 5])
+    with margin_col1:
+        margin_pct = st.number_input(
+            "Target Net Profit Margin (%)", min_value=0, max_value=100, value=15,
+            step=1, key="margin_pct", label_visibility="collapsed",
+        )
+    with margin_col2:
+        st.markdown(
+            f'<div style="padding:8px 0;font-size:.78rem;color:#94A3B8">'
+            f'Target Net Profit Margin: <strong style="color:#4ADE80">{margin_pct}%</strong> '
+            f'&mdash; Drywall revenue &amp; profit opportunity update live below</div>',
+            unsafe_allow_html=True,
+        )
+
     # ── Sort & Pagination ──
     scol1, scol2, scol3 = st.columns([1, 1, 4])
     with scol1:
         sort_map = {
             "Score ↓": ("opportunity_score", "DESC"),
             "Score ↑": ("opportunity_score", "ASC"),
-            "Date ↓": ("inspection_date", "DESC"),
-            "Date ↑": ("inspection_date", "ASC"),
             "Value ↓": ("project_value", "DESC"),
             "Value ↑": ("project_value", "ASC"),
+            "Date ↓": ("inspection_date", "DESC"),
+            "Date ↑": ("inspection_date", "ASC"),
+            "Address A-Z": ("address", "ASC"),
+            "Address Z-A": ("address", "DESC"),
+            "Builder A-Z": ("builder_name", "ASC"),
+            "Builder Z-A": ("builder_name", "DESC"),
+            "Municipality": ("municipality", "ASC"),
         }
         sort_choice = st.selectbox("Sort", list(sort_map.keys()), index=0, label_visibility="collapsed")
         sort_by, sort_order = sort_map[sort_choice]
@@ -1610,6 +1663,30 @@ def main():
             f"pierpont-{datetime.now().strftime('%Y-%m-%d')}.csv", "text/csv",
         )
 
+    # ── Helper functions ──
+    def _phone_link(num):
+        if not num:
+            return '<span class="empty-cell">&mdash;</span>'
+        return (
+            f'<a href="tel:{esc(num)}" style="color:#60A5FA;text-decoration:none;'
+            f'font-family:Fira Code,monospace;font-size:.7rem;white-space:nowrap">{esc(num)}</a>'
+        )
+
+    def _email_link(addr):
+        if not addr:
+            return '<span class="empty-cell">&mdash;</span>'
+        return f'<a href="mailto:{esc(addr)}" style="color:#60A5FA;text-decoration:none;font-size:.7rem">{esc(addr)}</a>'
+
+    def _website_link(url):
+        if not url:
+            return '<span class="empty-cell">&mdash;</span>'
+        try:
+            host = urlparse(url).hostname or url
+            host = host.replace("www.", "")
+        except Exception:
+            host = url
+        return f'<a href="{esc(url)}" target="_blank" style="color:#60A5FA;text-decoration:none;font-size:.7rem">{esc(host)}</a>'
+
     # ── Permits Table with Expandable Detail Rows ──
     if not result["data"]:
         st.markdown(
@@ -1629,77 +1706,108 @@ def main():
             unsafe_allow_html=True,
         )
 
-        # Build each permit as a <details> card — pure HTML, no JavaScript needed
-        # (Streamlit Cloud blocks inline onclick handlers)
-        def _phone_link(num):
-            if not num:
-                return '<span class="empty-cell">&mdash;</span>'
-            return (
-                f'<a href="tel:{esc(num)}" style="color:#60A5FA;text-decoration:none;'
-                f'font-family:Fira Code,monospace;font-size:.75rem;white-space:nowrap">{esc(num)}</a>'
-            )
-
-        def _email_link(addr):
-            if not addr:
-                return '<span class="empty-cell">&mdash;</span>'
-            return f'<a href="mailto:{esc(addr)}" style="color:#60A5FA;text-decoration:none;font-size:.75rem">{esc(addr)}</a>'
-
+        # Build permit cards
         cards_html = ""
         for p in result["data"]:
-            is_hv = p.get("project_value") and p["project_value"] >= 300000
+            pv = p.get("project_value") or 0
+            is_hv = pv >= 300000
             hv_border = "border-left:3px solid #2B6CB0;" if is_hv else ""
-            val_style = "color:#2B6CB0;" if is_hv else "color:#E2E8F0;"
+            val_color = "color:#2B6CB0;" if is_hv else "color:#E2E8F0;"
+
+            # Profit calculations (live based on margin input)
+            profit = calculate_drywall_profit(pv, margin_pct)
+            drywall_html = fmt_money(profit["drywall_revenue"]) if pv else "&mdash;"
+            profit_html = fmt_money(profit["profit_opportunity"]) if pv else "&mdash;"
 
             bn = p.get("builder_name") or ""
             bc = p.get("builder_company") or ""
             if bn and bc:
-                builder = f'{esc(bn)} <span style="color:#94A3B8;font-size:.75rem">@ {esc(bc)}</span>'
+                builder_text = f'{esc(bn)} <span style="color:#94A3B8;font-size:.65rem">@ {esc(bc)}</span>'
             elif bn or bc:
-                builder = esc(bn or bc)
+                builder_text = esc(bn or bc)
             else:
-                builder = '<span class="empty-cell">&mdash;</span>'
+                builder_text = '<span class="empty-cell">&mdash;</span>'
 
             addr_esc = esc(p.get("address") or "") or "&mdash;"
             muni_esc = esc(p.get("municipality") or "") or "&mdash;"
-            value_html = fmt_money(p.get("project_value"))
             score_html = score_badge(p.get("opportunity_score"))
-            status_html = status_badge(p.get("inspection_status"))
             date_html = fmt_date(p.get("inspection_date"))
 
-            # Summary row (always visible)
+            bw = p.get("builder_website") or ""
+            web_link = _website_link(bw)
+            web_email = _email_link(p.get("builder_email"))
+            web_phone = _phone_link(p.get("builder_phone"))
+
+            # Summary row — all key columns visible
             summary_html = (
-                f'<div style="display:grid;grid-template-columns:2fr 1fr 1.5fr 1fr 1fr;gap:8px;'
-                f'align-items:center;padding:12px 16px;font-size:.82rem">'
+                f'<div style="display:grid;'
+                f'grid-template-columns:1.8fr 0.8fr 1.4fr 1fr 0.9fr 0.9fr 0.7fr 0.6fr 0.7fr 0.5fr;'
+                f'gap:6px;align-items:center;padding:10px 14px;font-size:.76rem">'
+                # Address
                 f'<div style="color:#F8FAFC;font-weight:500;overflow:hidden;text-overflow:ellipsis;'
                 f'white-space:nowrap" title="{addr_esc}">{addr_esc}</div>'
-                f'<div style="color:#94A3B8;font-size:.72rem">{muni_esc}</div>'
-                f'<div>{builder}</div>'
-                f'<div style="text-align:right;font-family:Fira Code,monospace;font-size:.78rem;{val_style}">{value_html}</div>'
-                f'<div style="display:flex;align-items:center;gap:8px;justify-content:flex-end">{status_html} {score_html}</div>'
+                # City
+                f'<div style="color:#94A3B8;font-size:.68rem">{muni_esc}</div>'
+                # Builder
+                f'<div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{builder_text}</div>'
+                # Website
+                f'<div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{web_link}</div>'
+                # Web Email
+                f'<div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{web_email}</div>'
+                # Web Phone
+                f'<div>{web_phone}</div>'
+                # Value
+                f'<div style="text-align:right;font-family:Fira Code,monospace;font-size:.72rem;{val_color}">{fmt_money(pv)}</div>'
+                # Profit Opportunity
+                f'<div style="text-align:right;font-family:Fira Code,monospace;font-size:.72rem;color:#4ADE80">{profit_html}</div>'
+                # Date
+                f'<div style="font-family:Fira Code,monospace;font-size:.65rem;color:#94A3B8">{date_html}</div>'
+                # Score
+                f'<div style="text-align:center">{score_html}</div>'
                 f'</div>'
             )
 
-            # Expanded detail panel
-            detail_html = build_detail_panel(p)
+            # Expanded detail panel with ALL data
+            detail_fields = build_detail_panel(p)
 
-            # Website from DB
-            bw = p.get("builder_website") or ""
-            website_html = ""
+            # Add profit calculator fields to expanded view
+            profit_detail = (
+                f'<div class="detail-panel" style="border-top:1px solid rgba(43,108,176,0.15);'
+                f'background:rgba(34,197,94,0.03)">'
+                f'<div class="detail-field"><div class="detail-label">Permit Value</div>'
+                f'<div class="detail-value" style="font-family:Fira Code,monospace">{fmt_money(pv)}</div></div>'
+                f'<div class="detail-field"><div class="detail-label">Drywall % (log scale)</div>'
+                f'<div class="detail-value" style="font-family:Fira Code,monospace">'
+                f'{profit["drywall_pct"]*100:.1f}%</div></div>'
+                f'<div class="detail-field"><div class="detail-label">Est. Drywall Revenue</div>'
+                f'<div class="detail-value" style="font-family:Fira Code,monospace;color:#60A5FA">'
+                f'{fmt_money(profit["drywall_revenue"])}</div></div>'
+                f'<div class="detail-field"><div class="detail-label">Profit Opportunity ({margin_pct}%)</div>'
+                f'<div class="detail-value" style="font-family:Fira Code,monospace;color:#4ADE80;font-weight:700">'
+                f'{fmt_money(profit["profit_opportunity"])}</div></div>'
+            )
+            # Personal phone/email placeholders
+            per_ph = p.get("personal_phone") or ""
+            per_em = p.get("personal_email") or ""
+            profit_detail += (
+                f'<div class="detail-field"><div class="detail-label">Personal Phone</div>'
+                f'<div class="detail-value">{_phone_link(per_ph) if per_ph else "<span style=&quot;color:#64748B;font-size:.7rem&quot;>Future API integration</span>"}</div></div>'
+                f'<div class="detail-field"><div class="detail-label">Personal Email</div>'
+                f'<div class="detail-value">{_email_link(per_em) if per_em else "<span style=&quot;color:#64748B;font-size:.7rem&quot;>Future API integration</span>"}</div></div>'
+            )
+            # Website in detail
             if bw:
-                try:
-                    host = urlparse(bw).hostname or bw
-                    host = host.replace("www.", "")
-                except Exception:
-                    host = bw
-                website_html = (
-                    f'<div class="detail-field"><div class="detail-label">Website</div>'
-                    f'<div class="detail-value"><a href="{esc(bw)}" target="_blank">{esc(host)}</a></div></div>'
+                profit_detail += (
+                    f'<div class="detail-field"><div class="detail-label">Builder Website</div>'
+                    f'<div class="detail-value"><a href="{esc(bw)}" target="_blank" '
+                    f'style="color:#60A5FA">{esc(bw)}</a></div></div>'
                 )
+            profit_detail += '</div>'
 
             cards_html += (
-                f'<details class="permit-detail" style="border-bottom:1px solid rgba(255,255,255,0.04);{hv_border}">'
+                f'<details class="permit-detail" style="{hv_border}">'
                 f'<summary style="cursor:pointer;list-style:none">{summary_html}</summary>'
-                f'{detail_html}'
+                f'{detail_fields}{profit_detail}'
                 f'</details>'
             )
 
@@ -1710,14 +1818,18 @@ def main():
                 f"background-size:contain;opacity:0.06;"
             )
 
-        # Column headers
+        # Column headers matching summary grid
         header_html = (
-            f'<div style="display:grid;grid-template-columns:2fr 1fr 1.5fr 1fr 1fr;gap:8px;'
-            f'padding:12px 16px;font-size:.6rem;font-weight:600;text-transform:uppercase;'
-            f'letter-spacing:.08em;color:#94A3B8;background:rgba(15,23,42,0.5);'
+            f'<div style="display:grid;'
+            f'grid-template-columns:1.8fr 0.8fr 1.4fr 1fr 0.9fr 0.9fr 0.7fr 0.6fr 0.7fr 0.5fr;'
+            f'gap:6px;padding:10px 14px;font-size:.55rem;font-weight:600;text-transform:uppercase;'
+            f'letter-spacing:.07em;color:#94A3B8;background:rgba(15,23,42,0.5);'
             f'border-bottom:1px solid rgba(255,255,255,0.06)">'
-            f'<div>Address</div><div>Municipality</div><div>Builder</div>'
-            f'<div style="text-align:right">Value</div><div style="text-align:right">Status / Score</div>'
+            f'<div>Address</div><div>City</div><div>Builder</div>'
+            f'<div>Website</div><div>Web Email</div><div>Web Phone</div>'
+            f'<div style="text-align:right">Value</div>'
+            f'<div style="text-align:right">Profit Opp</div>'
+            f'<div>Date</div><div style="text-align:center">Score</div>'
             f'</div>'
         )
 
