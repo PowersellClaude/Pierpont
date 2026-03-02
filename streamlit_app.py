@@ -14,9 +14,12 @@ import json
 import base64
 import time
 import logging
-from datetime import datetime, timedelta
+import threading
+from datetime import datetime, timedelta, time as dtime
 from urllib.parse import quote, urlparse
 from html import escape as html_escape
+
+import pytz
 
 try:
     from bs4 import BeautifulSoup
@@ -1069,8 +1072,238 @@ def lookup_builder_web(session, company_name, city=None):
     return {"website": None, "phone": None, "email": None, "source": "none"}
 
 
+# ─── Auto-Scheduler ──────────────────────────────────────────────────────
+SCHEDULE_TIMES = [dtime(7, 0), dtime(13, 0), dtime(17, 0)]  # ET
+TIMEZONE = pytz.timezone("America/New_York")
+
+# Global flag so only one scheduler thread runs across all Streamlit sessions
+_scheduler_started = False
+_scheduler_lock = threading.Lock()
+
+
+def run_scraper_background(trigger="manual"):
+    """Headless version of run_scraper() for scheduler — no Streamlit UI required."""
+    log.info(f"Background scrape started (trigger={trigger})")
+    conn = get_db()
+    started_at = datetime.now(TIMEZONE).isoformat()
+
+    try:
+        session = requests.Session()
+        try:
+            session.get(f"{ENERGOV_BASE}/", headers={"User-Agent": TENANT_HEADERS["User-Agent"]}, timeout=30)
+        except Exception:
+            pass
+        time.sleep(1)
+
+        # Search EnerGov
+        all_permits = []
+        page_number = 1
+        while page_number <= 10:
+            body = build_search_body(STRAPPING_TYPE_ID, PASSED_STATUS_ID, page_number, 100)
+            try:
+                resp = session.post(SEARCH_API, json=body, headers=TENANT_HEADERS, timeout=30)
+                result = resp.json()
+            except Exception as e:
+                log.error(f"Background scrape API error: {e}")
+                break
+            if not result.get("Success"):
+                break
+            entities = result.get("Result", {}).get("EntityResults", [])
+            if not entities:
+                break
+            for entity in entities:
+                permit = map_entity(entity)
+                if permit:
+                    all_permits.append(permit)
+            if len(entities) < 100:
+                break
+            page_number += 1
+            time.sleep(1)
+
+        if not all_permits:
+            conn.execute(
+                "INSERT INTO scrape_log (started_at, completed_at, trigger, permits_found, new_permits, builders_cached, status) "
+                "VALUES (?, ?, ?, 0, 0, 0, 'no_results')",
+                (started_at, datetime.now(TIMEZONE).isoformat(), trigger),
+            )
+            conn.commit()
+            log.info("Background scrape: no permits found")
+            return
+
+        # Filter to new permits only
+        existing = set(
+            row[0] for row in conn.execute("SELECT permit_number FROM permits").fetchall()
+        )
+        new_permits = [p for p in all_permits if p.get("permit_number") not in existing]
+
+        if not new_permits:
+            conn.execute(
+                "INSERT INTO scrape_log (started_at, completed_at, trigger, permits_found, new_permits, builders_cached, status) "
+                "VALUES (?, ?, ?, ?, 0, 0, 'success')",
+                (started_at, datetime.now(TIMEZONE).isoformat(), trigger, len(all_permits)),
+            )
+            conn.commit()
+            log.info(f"Background scrape: {len(all_permits)} permits found, 0 new")
+            return
+
+        # Enrich new permits
+        for i, permit in enumerate(new_permits[:100]):
+            new_permits[i] = enrich_permit(session, permit)
+            time.sleep(0.5)
+
+        # Load builder cache
+        cached_builders = {}
+        for row in conn.execute("SELECT * FROM builder_cache").fetchall():
+            cached_builders[row["company_name"]] = dict(row)
+
+        # Builder web lookup
+        companies_searched = set()
+        company_results = {}
+        builders_cached_count = 0
+        web_session = requests.Session()
+
+        for i, permit in enumerate(new_permits):
+            company = (permit.get("builder_company") or "").strip()
+            if not company or permit.get("builder_website"):
+                continue
+
+            if company in cached_builders:
+                cached = cached_builders[company]
+                result = {"website": cached.get("website"), "phone": cached.get("phone"),
+                          "email": cached.get("email"), "source": "cache"}
+            elif company in company_results:
+                result = company_results[company]
+            elif company not in companies_searched:
+                companies_searched.add(company)
+                city = permit.get("municipality")
+                result = lookup_builder_web(web_session, company, city=city)
+                company_results[company] = result
+                try:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO builder_cache "
+                        "(company_name, website, phone, email, source) VALUES (?, ?, ?, ?, ?)",
+                        (company, result.get("website"), result.get("phone"),
+                         result.get("email"), result.get("source")),
+                    )
+                    conn.commit()
+                    builders_cached_count += 1
+                except Exception:
+                    pass
+                time.sleep(2)
+            else:
+                continue
+
+            if result.get("website"):
+                new_permits[i]["builder_website"] = result["website"]
+            if result.get("phone") and not new_permits[i].get("builder_phone"):
+                new_permits[i]["builder_phone"] = result["phone"]
+            if result.get("email") and not new_permits[i].get("builder_email"):
+                new_permits[i]["builder_email"] = result["email"]
+
+        # Save to DB
+        new_count = 0
+        for p in new_permits:
+            score = calculate_opportunity_score(
+                p.get("project_value"), p.get("inspection_date"), p.get("municipality")
+            )
+            try:
+                conn.execute("""
+                    INSERT OR REPLACE INTO permits (
+                        permit_number, address, municipality, builder_name, builder_company,
+                        builder_phone, builder_email, applicant_name, owner_name,
+                        project_value, permit_type, inspection_type, inspection_date,
+                        inspection_status, permit_issue_date, source_url, raw_data,
+                        opportunity_score, builder_website, scraped_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                """, (
+                    p.get("permit_number"), p.get("address"), p.get("municipality"),
+                    p.get("builder_name"), p.get("builder_company"),
+                    p.get("builder_phone"), p.get("builder_email"),
+                    p.get("applicant_name"), p.get("owner_name"),
+                    p.get("project_value"), p.get("permit_type"), p.get("inspection_type"),
+                    p.get("inspection_date"), p.get("inspection_status"),
+                    p.get("permit_issue_date"), p.get("source_url"), p.get("raw_data"),
+                    score, p.get("builder_website"),
+                ))
+                new_count += 1
+            except Exception as e:
+                log.warning(f"Background DB insert error: {e}")
+
+        conn.execute(
+            "INSERT INTO scrape_log (started_at, completed_at, trigger, permits_found, new_permits, builders_cached, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'success')",
+            (started_at, datetime.now(TIMEZONE).isoformat(), trigger,
+             len(all_permits), new_count, builders_cached_count),
+        )
+        conn.commit()
+        log.info(
+            f"Background scrape complete: {len(all_permits)} found, {new_count} new, "
+            f"{builders_cached_count} builders cached"
+        )
+    except Exception as e:
+        log.error(f"Background scrape failed: {e}")
+        try:
+            conn.execute(
+                "INSERT INTO scrape_log (started_at, completed_at, trigger, permits_found, new_permits, builders_cached, status) "
+                "VALUES (?, ?, ?, 0, 0, 0, ?)",
+                (started_at, datetime.now(TIMEZONE).isoformat(), trigger, f"error: {e}"),
+            )
+            conn.commit()
+        except Exception:
+            pass
+
+
+def scheduler_loop():
+    """Background thread that triggers scraper at scheduled times."""
+    log.info("Scheduler started — will run at 7:00, 13:00, 17:00 ET")
+    last_run_date_hour = None
+    while True:
+        now = datetime.now(TIMEZONE)
+        date_hour_key = now.strftime("%Y-%m-%d-%H")
+
+        for sched_time in SCHEDULE_TIMES:
+            if (now.hour == sched_time.hour
+                    and now.minute < 2
+                    and date_hour_key != last_run_date_hour):
+                last_run_date_hour = date_hour_key
+                log.info(f"Scheduler triggering scrape at {now.strftime('%H:%M')} ET")
+                try:
+                    run_scraper_background(trigger=f"scheduled_{sched_time.strftime('%H:%M')}")
+                except Exception as e:
+                    log.error(f"Scheduled scrape failed: {e}")
+                break
+
+        time.sleep(30)
+
+
+def start_scheduler():
+    """Start the scheduler thread if not already running (process-wide singleton)."""
+    global _scheduler_started
+    with _scheduler_lock:
+        if _scheduler_started:
+            return
+        _scheduler_started = True
+    t = threading.Thread(target=scheduler_loop, daemon=True, name="pierpont-scheduler")
+    t.start()
+    log.info("Scheduler thread launched")
+
+
+def get_next_scheduled_run():
+    """Return the next scheduled run time as a datetime."""
+    now = datetime.now(TIMEZONE)
+    for sched_time in sorted(SCHEDULE_TIMES, key=lambda t: t.hour):
+        candidate = now.replace(hour=sched_time.hour, minute=0, second=0, microsecond=0)
+        if candidate > now:
+            return candidate
+    # All times have passed today — next is tomorrow's first time
+    first = min(SCHEDULE_TIMES, key=lambda t: t.hour)
+    tomorrow = now + timedelta(days=1)
+    return tomorrow.replace(hour=first.hour, minute=0, second=0, microsecond=0)
+
+
 def run_scraper(status_placeholder):
     """Run the EnerGov scraper and save results to SQLite."""
+    scrape_started_at = datetime.now(TIMEZONE).isoformat()
     session = requests.Session()
     status_placeholder.info("Establishing session with EnerGov portal...")
     try:
@@ -1111,24 +1344,46 @@ def run_scraper(status_placeholder):
         status_placeholder.warning("No permits found. The EnerGov API may be temporarily unavailable.")
         return 0, 0
 
-    status_placeholder.info(f"Found {len(all_permits)} permits. Enriching with contact data...")
+    # Filter to only NEW permits not already in the database
+    conn = get_db()
+    existing = set(
+        row[0] for row in conn.execute("SELECT permit_number FROM permits").fetchall()
+    )
+    new_permits = [p for p in all_permits if p.get("permit_number") not in existing]
 
-    # Phase 1: Enrich from EnerGov building permits (contacts + values)
+    status_placeholder.info(
+        f"Found {len(all_permits)} permits total, {len(new_permits)} new. "
+        f"Enriching new permits with contact data..."
+    )
+
+    if not new_permits:
+        status_placeholder.success(
+            f"Scrape complete! {len(all_permits)} permits found, 0 new (all already in database)."
+        )
+        return len(all_permits), 0
+
+    # Phase 1: Enrich NEW permits from EnerGov building permits (contacts + values)
     enriched_count = 0
-    for i, permit in enumerate(all_permits[:100]):
+    for i, permit in enumerate(new_permits[:100]):
         if i % 5 == 0:
             status_placeholder.info(
-                f"Enriching permit {i + 1}/{min(len(all_permits), 100)} with contacts & values..."
+                f"Enriching permit {i + 1}/{min(len(new_permits), 100)} with contacts & values..."
             )
-        all_permits[i] = enrich_permit(session, permit)
+        new_permits[i] = enrich_permit(session, permit)
         enriched_count += 1
         time.sleep(0.5)
 
-    # Phase 2: Builder web lookup — search DuckDuckGo for company website, scrape phone/email
+    # Load cached builder info from DB
+    cached_builders = {}
+    for row in conn.execute("SELECT * FROM builder_cache").fetchall():
+        cached_builders[row["company_name"]] = dict(row)
+
+    # Phase 2: Builder web lookup — use cache first, then search web
     companies_searched = set()
-    company_results = {}  # cache: company_name -> {website, phone, email}
+    company_results = {}  # session cache: company_name -> {website, phone, email}
+    builders_cached_count = 0
     builders_with_company = [
-        (i, p) for i, p in enumerate(all_permits)
+        (i, p) for i, p in enumerate(new_permits)
         if p.get("builder_company") and not p.get("builder_website")
     ]
     if builders_with_company:
@@ -1144,29 +1399,52 @@ def run_scraper(status_placeholder):
                 status_placeholder.info(
                     f"Builder lookup {idx + 1}/{len(builders_with_company)}: {company[:40]}..."
                 )
-            # Deduplicate: only search each company once
-            if company in company_results:
+
+            # 1. Check builder_cache (DB) first — instant, no web request
+            if company in cached_builders:
+                cached = cached_builders[company]
+                result = {
+                    "website": cached.get("website"),
+                    "phone": cached.get("phone"),
+                    "email": cached.get("email"),
+                    "source": "cache",
+                }
+                log.info(f"  Cache hit for '{company}': web={result['website']}")
+            # 2. Check session-level dedup dict
+            elif company in company_results:
                 result = company_results[company]
+            # 3. Full web lookup
             elif company not in companies_searched:
                 companies_searched.add(company)
                 city = permit.get("municipality")
                 result = lookup_builder_web(web_session, company, city=city)
                 company_results[company] = result
+                # Save to builder_cache for future runs
+                try:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO builder_cache "
+                        "(company_name, website, phone, email, source) VALUES (?, ?, ?, ?, ?)",
+                        (company, result.get("website"), result.get("phone"),
+                         result.get("email"), result.get("source")),
+                    )
+                    conn.commit()
+                    builders_cached_count += 1
+                except Exception as e:
+                    log.warning(f"Builder cache insert error: {e}")
                 time.sleep(2)  # Rate limit
             else:
                 continue
 
             if result.get("website"):
-                all_permits[i]["builder_website"] = result["website"]
-            if result.get("phone") and not all_permits[i].get("builder_phone"):
-                all_permits[i]["builder_phone"] = result["phone"]
-            if result.get("email") and not all_permits[i].get("builder_email"):
-                all_permits[i]["builder_email"] = result["email"]
+                new_permits[i]["builder_website"] = result["website"]
+            if result.get("phone") and not new_permits[i].get("builder_phone"):
+                new_permits[i]["builder_phone"] = result["phone"]
+            if result.get("email") and not new_permits[i].get("builder_email"):
+                new_permits[i]["builder_email"] = result["email"]
 
-    status_placeholder.info(f"Saving {len(all_permits)} permits to database...")
-    conn = get_db()
+    status_placeholder.info(f"Saving {len(new_permits)} new permits to database...")
     new_count = 0
-    for p in all_permits:
+    for p in new_permits:
         score = calculate_opportunity_score(
             p.get("project_value"), p.get("inspection_date"), p.get("municipality")
         )
@@ -1195,9 +1473,23 @@ def run_scraper(status_placeholder):
     conn.commit()
 
     web_found = sum(1 for r in company_results.values() if r.get("website"))
+
+    # Log to scrape_log
+    try:
+        conn.execute(
+            "INSERT INTO scrape_log (started_at, completed_at, trigger, permits_found, new_permits, builders_cached, status) "
+            "VALUES (?, ?, 'manual', ?, ?, ?, 'success')",
+            (scrape_started_at, datetime.now(TIMEZONE).isoformat(),
+             len(all_permits), new_count, builders_cached_count),
+        )
+        conn.commit()
+    except Exception:
+        pass
+
     status_placeholder.success(
-        f"Scrape complete! {len(all_permits)} permits found, {new_count} saved. "
-        f"Builder websites: {web_found}/{len(companies_searched)} found."
+        f"Scrape complete! {len(all_permits)} permits found, {new_count} new saved. "
+        f"Builder websites: {web_found}/{len(companies_searched)} found. "
+        f"Cache hits: {len(builders_with_company) - len(companies_searched)}."
     )
     return len(all_permits), new_count
 
@@ -1433,6 +1725,28 @@ def get_db():
             is_drywall_opportunity INTEGER DEFAULT 0, opportunity_confidence TEXT,
             opportunity_signals TEXT, estimated_drywall_date TEXT,
             opportunity_score INTEGER, builder_website TEXT, personal_phone TEXT, personal_email TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS builder_cache (
+            company_name TEXT PRIMARY KEY,
+            website TEXT,
+            phone TEXT,
+            email TEXT,
+            source TEXT,
+            cached_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scrape_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at TEXT,
+            completed_at TEXT,
+            trigger TEXT,
+            permits_found INTEGER,
+            new_permits INTEGER,
+            builders_cached INTEGER,
+            status TEXT
         )
     """)
     conn.commit()
@@ -1745,6 +2059,12 @@ def main():
     inject_css()
     conn = get_db()
 
+    # ── Start Auto-Scheduler ──
+    if "auto_scrape" not in st.session_state:
+        st.session_state.auto_scrape = True
+    if st.session_state.auto_scrape:
+        start_scheduler()
+
     # ── Header ──
     logo_html = f'<img src="data:image/png;base64,{LOGO_B64}" class="header-logo">' if LOGO_B64 else ""
     st.markdown(
@@ -1907,6 +2227,78 @@ def main():
         st.markdown(foia_html, unsafe_allow_html=True)
         st.code(FOIA_BODY, language=None)
         st.caption("Copy the text above and paste it into the FOIA portal request form.")
+
+    # ── Auto-Scrape Scheduler Status ──
+    with st.expander("Auto-Scrape Scheduler", expanded=False):
+        sched_col1, sched_col2 = st.columns([1, 3])
+        with sched_col1:
+            auto_scrape_on = st.toggle("Auto-scrape enabled", value=st.session_state.auto_scrape, key="auto_scrape_toggle")
+            if auto_scrape_on != st.session_state.auto_scrape:
+                st.session_state.auto_scrape = auto_scrape_on
+                st.rerun()
+        with sched_col2:
+            if st.session_state.auto_scrape:
+                next_run = get_next_scheduled_run()
+                next_str = next_run.strftime("%b %d, %Y %I:%M %p ET")
+                st.markdown(
+                    f'<div style="padding:8px;font-size:.8rem;color:#4ADE80">'
+                    f'Next scheduled run: <strong>{next_str}</strong> &nbsp;'
+                    f'<span style="color:#94A3B8">(runs at 7:00 AM, 1:00 PM, 5:00 PM ET)</span></div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    '<div style="padding:8px;font-size:.8rem;color:#F59E0B">'
+                    'Auto-scrape is disabled. Toggle on to run at 7 AM, 1 PM, 5 PM ET daily.</div>',
+                    unsafe_allow_html=True,
+                )
+
+        # Show recent scrape log
+        log_rows = conn.execute(
+            "SELECT * FROM scrape_log ORDER BY id DESC LIMIT 10"
+        ).fetchall()
+        if log_rows:
+            st.markdown(
+                '<div style="font-size:.7rem;font-weight:600;color:#94A3B8;text-transform:uppercase;'
+                'letter-spacing:.06em;margin-top:8px;margin-bottom:4px">Recent Scrape History</div>',
+                unsafe_allow_html=True,
+            )
+            log_html = '<div style="font-size:.75rem">'
+            for row in log_rows:
+                r = dict(row)
+                trigger = r.get("trigger") or "?"
+                status = r.get("status") or "?"
+                started = r.get("started_at") or ""
+                found = r.get("permits_found") or 0
+                new = r.get("new_permits") or 0
+                cached = r.get("builders_cached") or 0
+
+                # Format timestamp
+                try:
+                    dt = datetime.fromisoformat(started)
+                    time_str = dt.strftime("%b %d %I:%M %p")
+                except Exception:
+                    time_str = started[:16] if started else "?"
+
+                status_color = "#4ADE80" if "success" in status else "#FCA5A5"
+                trigger_icon = "&#x23F0;" if "scheduled" in trigger else "&#x1F446;"
+
+                log_html += (
+                    f'<div style="padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.04)">'
+                    f'{trigger_icon} <span style="color:#E2E8F0">{time_str}</span> &nbsp;'
+                    f'<span class="badge badge-blue" style="font-size:.55rem;padding:1px 6px">{trigger}</span> &nbsp;'
+                    f'<span style="color:{status_color}">{status}</span> &nbsp;'
+                    f'<span style="color:#94A3B8">Found: {found}, New: {new}, Cached: {cached}</span>'
+                    f'</div>'
+                )
+            log_html += '</div>'
+            st.markdown(log_html, unsafe_allow_html=True)
+        else:
+            st.markdown(
+                '<div style="font-size:.78rem;color:#94A3B8;padding:8px 0">No scrape history yet. '
+                'Run the scraper manually or wait for a scheduled run.</div>',
+                unsafe_allow_html=True,
+            )
 
     st.markdown("")
 
