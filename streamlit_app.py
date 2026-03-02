@@ -24,6 +24,16 @@ try:
 except ImportError:
     HAS_BS4 = False
 
+try:
+    from ddgs import DDGS
+    HAS_DDGS = True
+except ImportError:
+    try:
+        from duckduckgo_search import DDGS
+        HAS_DDGS = True
+    except ImportError:
+        HAS_DDGS = False
+
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("pierpont")
 
@@ -586,14 +596,75 @@ def _extract_contacts_from_html(html_text):
     return list(phones), list(emails)
 
 
+def _domain_matches_company(hostname, company_name):
+    """Check if a domain name plausibly belongs to the company."""
+    if not hostname or not company_name:
+        return False
+    # Extract words from company name (lowercase, alpha only)
+    words = re.findall(r'[a-z]+', company_name.lower())
+    # Remove common filler words
+    filler = {"the", "of", "and", "inc", "llc", "co", "company", "corp", "group", "sc", "charleston"}
+    words = [w for w in words if w not in filler and len(w) > 2]
+    if not words:
+        return False
+    # Check if any meaningful word appears in the hostname
+    hostname_lower = hostname.lower().replace("-", "").replace(".", "")
+    matches = sum(1 for w in words if w in hostname_lower)
+    return matches >= 1
+
+
 def find_company_website(session, company_name, city=None):
-    """Search DuckDuckGo HTML for a builder company website."""
+    """Search DuckDuckGo for a builder company website using ddgs library.
+
+    Uses a two-pass strategy: first pass looks for domains that match the company
+    name (most likely their actual site), second pass accepts any non-skip domain.
+    """
     if not company_name:
         return None
     location = city or "South Carolina"
     # Strip "City of" / "Town of" prefixes for cleaner search
     location = re.sub(r'^(City of|Town of|County of)\s+', '', location, flags=re.I)
-    query = f"{company_name} {location} contractor builder"
+    query = f"{company_name} {location} South Carolina contractor builder"
+
+    def _is_valid_result(href):
+        """Check if a URL is a valid (non-skip) result."""
+        try:
+            hostname = urlparse(href).hostname
+            if not hostname:
+                return None
+            hostname = hostname.lower()
+            if any(hostname == d or hostname.endswith("." + d) for d in SKIP_DOMAINS):
+                return None
+            if "duckduckgo" in hostname:
+                return None
+            return hostname
+        except Exception:
+            return None
+
+    if HAS_DDGS:
+        try:
+            results = DDGS().text(query, max_results=15)
+            valid_results = []
+            for r in results:
+                href = r.get("href", "")
+                hostname = _is_valid_result(href)
+                if hostname:
+                    valid_results.append((href, hostname))
+
+            # Pass 1: prefer domains that match the company name
+            for href, hostname in valid_results:
+                if _domain_matches_company(hostname, company_name):
+                    log.info(f"  Search: matched domain '{hostname}' to company '{company_name}'")
+                    return href
+
+            # Pass 2: return first valid result
+            if valid_results:
+                return valid_results[0][0]
+
+        except Exception as e:
+            log.warning(f"DDGS search failed for '{company_name}': {e}")
+
+    # Fallback: try DuckDuckGo HTML lite
     try:
         resp = session.get(
             "https://html.duckduckgo.com/html/",
@@ -601,90 +672,160 @@ def find_company_website(session, company_name, city=None):
             headers={"User-Agent": WEB_UA},
             timeout=15,
         )
-        if resp.status_code != 200:
-            return None
-        # Parse DuckDuckGo HTML results
-        if HAS_BS4:
+        if HAS_BS4 and resp.status_code in (200, 202):
             soup = BeautifulSoup(resp.text, "html.parser")
+            valid_results = []
             for a in soup.select("a.result__a"):
                 href = a.get("href", "")
-                # DDG wraps links — extract real URL
                 if "uddg=" in href:
-                    from urllib.parse import parse_qs, urlparse as _up
-                    qs = parse_qs(_up(href).query)
+                    from urllib.parse import parse_qs
+                    qs = parse_qs(urlparse(href).query)
                     href = qs.get("uddg", [href])[0]
-                try:
-                    hostname = urlparse(href).hostname
-                    if not hostname:
-                        continue
-                    hostname = hostname.lower()
-                    if any(hostname == d or hostname.endswith("." + d) for d in SKIP_DOMAINS):
-                        continue
-                    if "duckduckgo" in hostname:
-                        continue
+                hostname = _is_valid_result(href)
+                if hostname:
+                    valid_results.append((href, hostname))
+            # Same two-pass strategy
+            for href, hostname in valid_results:
+                if _domain_matches_company(hostname, company_name):
                     return href
-                except Exception:
-                    continue
-        else:
-            # Regex fallback if no bs4
-            for href in re.findall(r'uddg=([^&"]+)', resp.text):
-                from urllib.parse import unquote
-                url = unquote(href)
-                try:
-                    hostname = urlparse(url).hostname
-                    if not hostname:
-                        continue
-                    hostname = hostname.lower()
-                    if any(hostname == d or hostname.endswith("." + d) for d in SKIP_DOMAINS):
-                        continue
-                    return url
-                except Exception:
-                    continue
+            if valid_results:
+                return valid_results[0][0]
     except Exception as e:
-        log.warning(f"DuckDuckGo search failed for '{company_name}': {e}")
+        log.warning(f"DuckDuckGo HTML fallback failed for '{company_name}': {e}")
     return None
 
 
+def _discover_contact_links(html_text, base_url):
+    """Discover contact/about/team page links from navigation on the homepage."""
+    links = set()
+    if not HAS_BS4 or not html_text:
+        return links
+    soup = BeautifulSoup(html_text, "html.parser")
+    contact_patterns = re.compile(
+        r'contact|about|team|staff|our-team|get-in-touch|reach-us|connect|location|office',
+        re.I,
+    )
+    parsed_base = urlparse(base_url)
+    base_host = parsed_base.hostname or ""
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        text = a.get_text(" ", strip=True).lower()
+        # Check if link text or href contains contact-like keywords
+        if contact_patterns.search(text) or contact_patterns.search(href):
+            # Resolve relative URLs
+            if href.startswith("/"):
+                href = f"{parsed_base.scheme}://{parsed_base.netloc}{href}"
+            elif href.startswith("http"):
+                # Only follow links on the same domain
+                try:
+                    link_host = urlparse(href).hostname or ""
+                    if link_host.lower() != base_host.lower():
+                        continue
+                except Exception:
+                    continue
+            else:
+                # Relative path without leading /
+                if href.startswith("#") or href.startswith("mailto:") or href.startswith("tel:"):
+                    continue
+                href = f"{parsed_base.scheme}://{parsed_base.netloc}/{href}"
+            links.add(href.rstrip("/"))
+    return links
+
+
 def scrape_website_contacts(session, website_url):
-    """Scrape a builder website for phone/email across multiple pages."""
+    """Deep-scrape a builder website for phone/email across many pages.
+
+    Strategy:
+    1. Scrape the homepage and extract contacts
+    2. Discover contact/about pages from navigation links
+    3. Try 15+ common static page paths
+    4. Scrape up to 12 unique pages total
+    5. Stop early if both phone and email are found
+    """
     if not website_url:
         return [], []
     all_phones = set()
     all_emails = set()
+    visited = set()
+
     try:
-        base = urlparse(website_url)
-        base_url = f"{base.scheme}://{base.netloc}"
+        parsed = urlparse(website_url)
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
     except Exception:
         return [], []
 
-    pages_to_try = [
-        website_url,
-        f"{base_url}/contact",
-        f"{base_url}/contact-us",
-        f"{base_url}/contact.html",
-        f"{base_url}/about",
-        f"{base_url}/about-us",
+    # Static paths to try (order by likelihood of having contact info)
+    static_paths = [
+        "/contact", "/contact-us", "/contact.html", "/contactus",
+        "/about", "/about-us", "/about.html", "/aboutus",
+        "/our-team", "/team", "/staff", "/people",
+        "/locations", "/get-in-touch", "/reach-us", "/connect",
+        "/footer", "/info",
     ]
 
-    for page_url in pages_to_try:
+    def _fetch_and_extract(url):
+        """Fetch a page and extract contacts. Returns True if page was fetched."""
+        normalized = url.rstrip("/").lower()
+        if normalized in visited:
+            return False
+        visited.add(normalized)
         try:
             resp = session.get(
-                page_url,
-                headers={"User-Agent": WEB_UA, "Accept": "text/html,application/xhtml+xml"},
-                timeout=10,
+                url,
+                headers={
+                    "User-Agent": WEB_UA,
+                    "Accept": "text/html,application/xhtml+xml,*/*",
+                },
+                timeout=12,
                 allow_redirects=True,
             )
             if resp.status_code >= 400:
-                continue
+                return False
             phones, emails = _extract_contacts_from_html(resp.text)
             all_phones.update(phones)
             all_emails.update(emails)
-            # If we found both, no need to keep scraping
-            if all_phones and all_emails:
-                break
+            return True, resp.text
+        except Exception:
+            return False, ""
+
+    # Phase 1: Scrape homepage
+    log.info(f"  Deep scrape: fetching homepage {website_url}")
+    homepage_html = ""
+    try:
+        result = _fetch_and_extract(website_url)
+        if isinstance(result, tuple):
+            _, homepage_html = result
+    except Exception:
+        pass
+
+    # Phase 2: Discover contact links from nav
+    discovered_links = _discover_contact_links(homepage_html, base_url)
+    log.info(f"  Deep scrape: discovered {len(discovered_links)} nav links")
+
+    # Phase 3: Build priority queue — discovered links first, then static paths
+    pages_to_try = []
+    for link in discovered_links:
+        pages_to_try.append(link)
+    for path in static_paths:
+        pages_to_try.append(f"{base_url}{path}")
+
+    # Phase 4: Scrape pages (up to 12 total including homepage)
+    max_pages = 12
+    pages_scraped = 1  # homepage already done
+    for page_url in pages_to_try:
+        if pages_scraped >= max_pages:
+            break
+        if all_phones and all_emails:
+            log.info(f"  Deep scrape: found both phone + email, stopping early")
+            break
+        try:
+            result = _fetch_and_extract(page_url)
+            if isinstance(result, tuple) and result[0]:
+                pages_scraped += 1
         except Exception:
             continue
 
+    log.info(f"  Deep scrape: scraped {pages_scraped} pages, found {len(all_phones)} phone(s), {len(all_emails)} email(s)")
     return list(all_phones), list(all_emails)
 
 
