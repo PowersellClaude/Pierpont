@@ -20,7 +20,8 @@ const SKIP_DOMAINS = [
   'duckduckgo.com', 'apple.com', 'x.com', 'bizapedia.com',
   'opencorporates.com', 'sec.gov', 'companieslist.co',
   'newhomesource.com', 'newhomeguide.com', 'zillow.com',
-  'realtor.com', 'redfin.com', 'trulia.com',
+  'realtor.com', 'redfin.com', 'trulia.com', 'homes.com',
+  'homesnap.com', 'movoto.com', 'apartments.com',
 ];
 
 // Junk email patterns to skip
@@ -396,8 +397,24 @@ async function bulkLookupBuilders(db, statusCallback) {
       }
 
       try {
-        const result = await lookupBuilder(company, browser);
+        // If permits already have a website but no phone/email, re-scrape that website
         const companyPermits = companyMap.get(company);
+        const existingWebsite = companyPermits.find(p => p.builder_website)?.builder_website;
+        let result;
+
+        if (existingWebsite && companyPermits.every(p => !p.builder_phone && !p.builder_email)) {
+          // Already have website but missing contact info — just re-scrape the site
+          utils.log(`[BuilderLookup] Re-scraping "${company}" at ${existingWebsite} for contact info...`);
+          const page = await browser.newPage();
+          await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+          await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
+          const { phones, emails } = await scrapeContactInfo(existingWebsite, page);
+          try { await page.close(); } catch {}
+          result = { website: existingWebsite, phone: phones[0] || null, email: emails[0] || null, allPhones: phones, allEmails: emails };
+          utils.log(`[BuilderLookup] Re-scrape "${company}": ${phones.length} phone(s), ${emails.length} email(s)`);
+        } else {
+          result = await lookupBuilder(company, browser);
+        }
 
         for (const permit of companyPermits) {
           const updates = {};

@@ -367,7 +367,6 @@
               <th class="sort-header" onclick="sortBy('owner_name')">Owner<span class="sort-arrow" id="sort-owner_name">&#x25B2;</span></th>
               <th class="sort-header" style="text-align:right" onclick="sortBy('project_value')">Value<span class="sort-arrow" id="sort-project_value">&#x25B2;</span></th>
               <th class="sort-header" onclick="sortBy('inspection_date')">Insp Date<span class="sort-arrow" id="sort-inspection_date">&#x25B2;</span></th>
-              <th class="sort-header" onclick="sortBy('permit_issue_date')">Permit Date<span class="sort-arrow" id="sort-permit_issue_date">&#x25B2;</span></th>
               <th>Status</th>
               <th class="sort-header" style="text-align:center" onclick="sortBy('opportunity_score')">Score<span class="sort-arrow active" id="sort-opportunity_score">&#x25BC;</span></th>
               <th class="sort-header" onclick="sortBy('permit_number')">Permit #<span class="sort-arrow" id="sort-permit_number">&#x25B2;</span></th>
@@ -375,7 +374,7 @@
             </tr>
           </thead>
           <tbody id="permitsTableBody">
-            <tr><td colspan="15" class="px-6 py-16 text-center" style="color:var(--text-dim)">
+            <tr><td colspan="14" class="px-6 py-16 text-center" style="color:var(--text-dim)">
               <svg class="mx-auto mb-3" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" style="color:rgba(43,108,176,0.3)"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
               <div class="text-base font-medium" style="color:var(--text)">No permits loaded</div>
               <div class="text-sm mt-1">Click <strong style="color:var(--blue)">Run Scraper</strong> to fetch permits.</div>
@@ -460,7 +459,7 @@ async function lookupBuilder(permitId,btn){btn.disabled=true;btn.textContent='Se
 // ── Table ────
 function renderTable(permits){
   const tbody=document.getElementById('permitsTableBody');
-  if(!permits||!permits.length){tbody.innerHTML=`<tr><td colspan="15" class="px-6 py-16 text-center" style="color:var(--text-dim)"><svg class="mx-auto mb-3" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" style="color:rgba(43,108,176,0.3)"><path d="M20 12H4M12 4v16"/></svg><div class="text-base font-medium" style="color:var(--text)">No permits found</div><div class="text-sm mt-1">Try adjusting filters or run the scraper.</div></td></tr>`;return;}
+  if(!permits||!permits.length){tbody.innerHTML=`<tr><td colspan="14" class="px-6 py-16 text-center" style="color:var(--text-dim)"><svg class="mx-auto mb-3" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" style="color:rgba(43,108,176,0.3)"><path d="M20 12H4M12 4v16"/></svg><div class="text-base font-medium" style="color:var(--text)">No permits found</div><div class="text-sm mt-1">Try adjusting filters or run the scraper.</div></td></tr>`;return;}
   tbody.innerHTML='';
   permits.forEach(p=>{
     const isHV=p.project_value&&p.project_value>=300000;
@@ -487,7 +486,6 @@ function renderTable(permits){
       <td style="color:var(--text)">${esc(p.owner_name)||'<span class="empty-cell">&mdash;</span>'}</td>
       <td style="text-align:right;font-family:'Fira Code',monospace;font-size:.75rem;${isHV?'color:var(--blue)':''}">${p.project_value?fmtCurrency(p.project_value):'<span class="empty-cell">&mdash;</span>'}</td>
       <td style="color:var(--text);font-family:'Fira Code',monospace;font-size:.7rem">${fmtDateShort(p.inspection_date)||'<span class="empty-cell">&mdash;</span>'}</td>
-      <td style="color:var(--text);font-family:'Fira Code',monospace;font-size:.7rem">${fmtDateShort(p.permit_issue_date)||'<span class="empty-cell">&mdash;</span>'}</td>
       <td>${statusBadge(p.inspection_status)}</td>
       <td style="text-align:center">${scoreBadge(p.opportunity_score)}</td>
       <td style="font-family:'Fira Code',monospace;font-size:.65rem;color:var(--text-dim)">${esc(p.permit_number)||'<span class="empty-cell">&mdash;</span>'}</td>
@@ -499,7 +497,7 @@ function renderTable(permits){
     try{const raw=typeof p.raw_data==='string'?JSON.parse(p.raw_data):p.raw_data;const subs=raw?._contractors||[];if(subs.length)subsHtml=subs.map(c=>esc(c.name)+(c.company?` <span style="color:var(--text-dim)">(${esc(c.company)})</span>`:'')).join(', ');const allC=raw?._allContacts||[];if(allC.length)subsHtml=allC.map(c=>`<span class="font-medium">${esc(c.name||'?')}</span> <span style="color:var(--text-dim)">[${esc(c.type)}]</span>${c.company?' @ '+esc(c.company):''}`).join('<br>');if(raw?._linkedPermit){const lpUrl=raw._linkedPermitUrl;linkedPermitHtml=lpUrl?`<a href="${esc(lpUrl)}" target="_blank" onclick="event.stopPropagation()">${esc(raw._linkedPermit)}</a>`:esc(raw._linkedPermit);}if(raw?._dataSource){const src=raw._dataSource==='building_permit'?'Building Permit':'Inspection Contacts';dataSourceHtml=`<span class="badge ${raw._dataSource==='building_permit'?'badge-green':'badge-blue'}">${src}</span>`;}}catch(e){}
 
     const dr=document.createElement('tr');dr.id=`d-${p.id}`;dr.className='detail-row';
-    dr.innerHTML=`<td colspan="15" style="padding:16px 24px;background:rgba(43,108,176,0.03)"><div class="grid grid-cols-2 md:grid-cols-4 gap-4" style="font-size:.8rem">
+    dr.innerHTML=`<td colspan="14" style="padding:16px 24px;background:rgba(43,108,176,0.03)"><div class="grid grid-cols-2 md:grid-cols-4 gap-4" style="font-size:.8rem">
       <div><span style="color:var(--text-dim);font-size:.65rem;display:block">Permit #</span><span class="font-medium" style="font-family:'Fira Code',monospace;font-size:.75rem">${esc(p.permit_number)||'&mdash;'}</span></div>
       <div><span style="color:var(--text-dim);font-size:.65rem;display:block">Linked Building Permit</span><span class="font-medium">${linkedPermitHtml}</span></div>
       <div><span style="color:var(--text-dim);font-size:.65rem;display:block">Opportunity Score</span><span class="font-medium">${scoreBadge(p.opportunity_score)} ${dataSourceHtml}</span></div>

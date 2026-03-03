@@ -315,7 +315,13 @@ async function getPermitsNeedingLookup() {
   return queryAll(`SELECT id, builder_name, builder_company, builder_phone, builder_email, builder_website
     FROM permits
     WHERE (builder_company IS NOT NULL AND builder_company != '')
-      AND (builder_website IS NULL OR builder_website = '')
+      AND (
+        (builder_website IS NULL OR builder_website = '')
+        OR (
+          (builder_phone IS NULL OR builder_phone = '')
+          AND (builder_email IS NULL OR builder_email = '')
+        )
+      )
     ORDER BY opportunity_score DESC`);
 }
 
