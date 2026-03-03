@@ -328,11 +328,30 @@ def enrich_permit(session, permit):
             )
         )
 
-        # Pick the building permit with the highest value
-        best = max(
-            building_permits,
-            key=lambda e: float(e.get("ProjectValue") or e.get("EstimatedValue") or 0),
-        )
+        # Pick the building permit with the closest date to our inspection
+        insp_date_str = permit.get("inspection_date")
+        if insp_date_str:
+            try:
+                insp_dt = datetime.strptime(insp_date_str, "%Y-%m-%d")
+                def _date_distance(e):
+                    d = parse_energov_date(e.get("IssueDate") or e.get("ApplyDate") or e.get("OpenedDate"))
+                    if not d:
+                        return 999999  # no date = worst match
+                    try:
+                        return abs((datetime.strptime(d, "%Y-%m-%d") - insp_dt).days)
+                    except Exception:
+                        return 999999
+                best = min(building_permits, key=_date_distance)
+            except Exception:
+                best = max(
+                    building_permits,
+                    key=lambda e: float(e.get("ProjectValue") or e.get("EstimatedValue") or 0),
+                )
+        else:
+            best = max(
+                building_permits,
+                key=lambda e: float(e.get("ProjectValue") or e.get("EstimatedValue") or 0),
+            )
         case_id = best.get("CaseId")
         if not case_id:
             return enriched
@@ -1768,9 +1787,12 @@ def query_permits(conn, filters=None, sort_by="opportunity_score", sort_order="D
         if filters.get("municipality"):
             conditions.append("municipality = ?")
             values.append(filters["municipality"])
-        if filters.get("date_from"):
-            conditions.append("inspection_date >= ?")
-            values.append(filters["date_from"])
+        # Default to last 30 days if no date filter specified
+        date_from = filters.get("date_from")
+        if not date_from:
+            date_from = (datetime.now(TIMEZONE) - timedelta(days=30)).strftime("%Y-%m-%d")
+        conditions.append("inspection_date >= ?")
+        values.append(date_from)
         if filters.get("date_to"):
             conditions.append("inspection_date <= ?")
             values.append(filters["date_to"])
@@ -1806,11 +1828,13 @@ def query_permits(conn, filters=None, sort_by="opportunity_score", sort_order="D
 
 
 def get_stats(conn):
+    cutoff = (datetime.now(TIMEZONE) - timedelta(days=30)).strftime("%Y-%m-%d")
     row = conn.execute(
         "SELECT COUNT(*) as t, COALESCE(AVG(project_value),0) as a, "
-        "MIN(inspection_date) as mi, MAX(inspection_date) as ma FROM permits"
+        "MIN(inspection_date) as mi, MAX(inspection_date) as ma FROM permits "
+        "WHERE inspection_date >= ?", (cutoff,)
     ).fetchone()
-    hv = conn.execute("SELECT COUNT(*) FROM permits WHERE project_value >= 300000").fetchone()
+    hv = conn.execute("SELECT COUNT(*) FROM permits WHERE project_value >= 300000 AND inspection_date >= ?", (cutoff,)).fetchone()
     return {
         "total": row[0], "avg": row[1],
         "earliest": row[2], "latest": row[3],
@@ -2439,7 +2463,8 @@ def main():
 
     # ── CSV Export ──
     if export_csv and result["total"] > 0:
-        df = pd.read_sql_query("SELECT * FROM permits ORDER BY opportunity_score DESC", conn)
+        csv_cutoff = (datetime.now(TIMEZONE) - timedelta(days=30)).strftime("%Y-%m-%d")
+        df = pd.read_sql_query("SELECT * FROM permits WHERE inspection_date >= ? ORDER BY opportunity_score DESC", conn, params=(csv_cutoff,))
         st.download_button(
             "Download CSV", df.to_csv(index=False),
             f"pierpont-{datetime.now().strftime('%Y-%m-%d')}.csv", "text/csv",

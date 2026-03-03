@@ -314,7 +314,7 @@ module.exports = {
 
   // Search the permit portal by address to find the residential building permit
   // Returns enrichment data (value, builder, contacts) or null
-  async searchBuildingPermitByAddress(page, address) {
+  async searchBuildingPermitByAddress(page, address, inspectionDate) {
     utils.log(`[Charleston] Permit keyword search: "${address}"`);
     const body = buildPermitSearchBody(address);
 
@@ -365,12 +365,24 @@ module.exports = {
 
     utils.log(`[Charleston] Found ${buildingPermits.length} building permit(s) at ${address}: ${buildingPermits.map(p => `${p.CaseType}/${p.CaseWorkclass} [${p.CaseNumber}] val=${p.ProjectValue||p.EstimatedValue||'?'}`).join(', ')}`);
 
-    // Pick the one with the highest value
-    const best = buildingPermits.reduce((a, b) => {
-      const valA = parseFloat(a.ProjectValue || a.EstimatedValue || 0);
-      const valB = parseFloat(b.ProjectValue || b.EstimatedValue || 0);
-      return valB > valA ? b : a;
-    });
+    // Pick the building permit with the closest date to our inspection
+    let best;
+    if (inspectionDate) {
+      const inspTime = new Date(inspectionDate).getTime();
+      best = buildingPermits.reduce((a, b) => {
+        const dateA = parseDate(a.IssueDate || a.ApplyDate || a.OpenedDate);
+        const dateB = parseDate(b.IssueDate || b.ApplyDate || b.OpenedDate);
+        const diffA = dateA ? Math.abs(new Date(dateA).getTime() - inspTime) : Infinity;
+        const diffB = dateB ? Math.abs(new Date(dateB).getTime() - inspTime) : Infinity;
+        return diffB < diffA ? b : a;
+      });
+    } else {
+      best = buildingPermits.reduce((a, b) => {
+        const valA = parseFloat(a.ProjectValue || a.EstimatedValue || 0);
+        const valB = parseFloat(b.ProjectValue || b.EstimatedValue || 0);
+        return valB > valA ? b : a;
+      });
+    }
 
     const caseId = best.CaseId;
     if (!caseId) return null;
@@ -456,7 +468,7 @@ module.exports = {
 
     // Preferred path: search for building permit by address
     try {
-      const permitData = await this.searchBuildingPermitByAddress(page, address);
+      const permitData = await this.searchBuildingPermitByAddress(page, address, permit.inspection_date);
       if (permitData) {
         dataSource = 'building_permit_search';
         for (const key of ['project_value', 'builder_name', 'builder_company', 'owner_name', 'permit_type', 'permit_issue_date']) {
