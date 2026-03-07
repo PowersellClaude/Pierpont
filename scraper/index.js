@@ -5,6 +5,8 @@ const db = require('../db/init');
 const utils = require('./utils');
 const { lookupBuilder, launchBrowser } = require('./builderLookup');
 const directoryScraper = require('./directory-scraper');
+const builderCache = require('./builder-cache');
+const llrLookup = require('./llr-lookup');
 
 // Import all portal scrapers
 const citizenserve = require('./portals/citizenserve');
@@ -138,16 +140,21 @@ async function runAllScrapers(options = {}) {
     await utils.delay(config.scraper.requestDelayMs);
   }
 
-  // ── Pre-populate builder cache from CHBA directory ──
+  // ── Pre-populate builder cache from CHBA directory (throttled to every 90 days) ──
   try {
-    utils.log('\n📒 Crawling Charleston HBA directory for builder contacts...');
+    utils.log('\n📒 Checking Charleston HBA directory cache...');
     currentRun.current_municipality = 'CHBA Directory';
     await directoryScraper.scrapeDirectory();
   } catch (err) {
-    utils.log(`⚠️  Directory scrape error: ${err.message}`);
+    utils.log(`[Directory] Error: ${err.message}`);
   }
 
-  // ── Auto-crawl builder websites (uses ONE shared browser to avoid OOM) ──
+  // ── Contact enrichment cascade ──────────────────────────────────────────────
+  // For each builder that needs phone/email, try sources in order:
+  //   1. Builder cache (instant — includes CHBA directory data)
+  //   2. SC LLR contractor license database
+  //   3. Web search (DuckDuckGo + website scrape) — last resort
+  // ───────────────────────────────────────────────────────────────────────────
   const excluded = config.excludedBuilders || [];
   const isExcluded = (name) => {
     if (!name) return false;
@@ -155,11 +162,11 @@ async function runAllScrapers(options = {}) {
     return excluded.some(pattern => lower.includes(pattern.toLowerCase()));
   };
 
+  // Collect unique builders that need contact info
   const companyMap = new Map();
   for (const p of allPermits) {
     const company = (p.builder_company || '').trim();
     if (!company) continue;
-    // Skip excluded builders — they were already filtered during upsert
     if (isExcluded(company) || isExcluded(p.builder_name)) continue;
     if (!companyMap.has(company)) companyMap.set(company, []);
     companyMap.get(company).push(p);
@@ -167,48 +174,99 @@ async function runAllScrapers(options = {}) {
 
   const uniqueCompanies = [...companyMap.keys()];
   if (uniqueCompanies.length > 0) {
-    utils.log(`\n🔍 Auto-crawling ${uniqueCompanies.length} builder websites...`);
-    currentRun.current_municipality = 'Builder Lookup';
+    utils.log(`\n🔍 Enriching ${uniqueCompanies.length} builders (cascade: cache → LLR → web)...`);
+    currentRun.current_municipality = 'Builder Enrichment';
 
     let lookupBrowser;
-    let lookupFound = 0;
+    let fromCache = 0, fromLLR = 0, fromWeb = 0, noContact = 0;
+
     try {
       lookupBrowser = await launchBrowser();
-      utils.log('[BuilderLookup] Shared browser launched for auto-crawl');
+      utils.log('[Enrichment] Shared browser launched');
+
+      // Quick health check on SC LLR site
+      const llrPage = await lookupBrowser.newPage();
+      await llrPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
+      const llrAvailable = await llrLookup.isAvailable(llrPage);
+      utils.log(`[Enrichment] SC LLR site: ${llrAvailable ? 'available' : 'DOWN — will skip'}`);
 
       for (const company of uniqueCompanies) {
+        const permits = companyMap.get(company);
+        let contactData = null;
+        let source = null;
+
         try {
-          const result = await lookupBuilder(company, lookupBrowser);
-          if (result.website) {
-            lookupFound++;
-            const permits = companyMap.get(company);
+          // ── Step 1: Check builder cache ──
+          const cached = builderCache.get(company);
+          if (cached && (cached.phone || cached.email)) {
+            contactData = cached;
+            source = 'cache';
+            fromCache++;
+          }
+
+          // ── Step 2: SC LLR contractor license lookup ──
+          if (!contactData && llrAvailable) {
+            const llrResult = await llrLookup.lookupContractor(company, llrPage);
+            if (llrResult && (llrResult.phone || llrResult.email)) {
+              contactData = llrResult;
+              source = 'sc-llr';
+              fromLLR++;
+              // Save to cache for future runs
+              builderCache.set(company, {
+                website: null,
+                phone: llrResult.phone,
+                email: llrResult.email,
+                allPhones: llrResult.allPhones || [],
+                allEmails: llrResult.allEmails || [],
+              });
+            }
+            await utils.delay(1500);
+          }
+
+          // ── Step 3: Web search (DuckDuckGo + website scrape) ──
+          if (!contactData) {
+            const result = await lookupBuilder(company, lookupBrowser);
+            if (result && (result.phone || result.email || result.website)) {
+              contactData = result;
+              source = 'web';
+              fromWeb++;
+            } else {
+              noContact++;
+            }
+          }
+
+          // Update all permits for this builder
+          if (contactData) {
             for (const permit of permits) {
               const updates = {};
-              if (result.phone) updates.phone = result.phone;
-              if (result.email) updates.email = result.email;
-              if (result.website) updates.website = result.website;
+              if (contactData.phone) updates.phone = contactData.phone;
+              if (contactData.email) updates.email = contactData.email;
+              if (contactData.website) updates.website = contactData.website;
               if (Object.keys(updates).length > 0) {
-                // Look up the DB record by permit_number (raw scraper objects don't have DB id)
                 const dbRow = await db.getPermitByNumber(permit.permit_number);
                 if (dbRow) {
                   await db.updateBuilderContact(dbRow.id, updates);
-                } else {
-                  utils.log(`⚠️  Could not find DB record for permit ${permit.permit_number}`);
                 }
               }
             }
+            utils.log(`[Enrichment] "${company}" [${source}]: ${contactData.phone || 'no phone'}, ${contactData.email || 'no email'}`);
           }
-          await utils.delay(2000);
+
+          await utils.delay(1000);
         } catch (err) {
-          utils.log(`⚠️  Builder lookup failed for "${company}": ${err.message}`);
+          utils.log(`[Enrichment] Error for "${company}": ${err.message}`);
+          noContact++;
         }
       }
+
+      try { await llrPage.close(); } catch {}
     } catch (err) {
-      utils.log(`⚠️  Builder lookup browser error: ${err.message}`);
+      utils.log(`[Enrichment] Browser error: ${err.message}`);
     } finally {
       if (lookupBrowser) try { await lookupBrowser.close(); } catch {}
     }
-    utils.log(`✅ Builder lookup complete: ${lookupFound}/${uniqueCompanies.length} websites found`);
+
+    utils.log(`\n[Enrichment] Complete: ${fromCache} cache, ${fromLLR} LLR, ${fromWeb} web, ${noContact} no contact`);
   }
 
   // Update the scrape run record
