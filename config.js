@@ -508,6 +508,14 @@ module.exports = {
     'Luxe Builders',
     'Watts Builders',
     'Port City Home',
+    'Dan Ryan',
+    'Mahshie',
+    'CKC Properties',
+    'Foster Calvin',
+    'Hinmar',
+    'Jeffrey Builders',
+    'Millsite',
+    'Oak Marsh',
   ],
 
   // FUTURE hooks
