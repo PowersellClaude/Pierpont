@@ -148,10 +148,19 @@ async function runAllScrapers(options = {}) {
   }
 
   // ── Auto-crawl builder websites (uses ONE shared browser to avoid OOM) ──
+  const excluded = config.excludedBuilders || [];
+  const isExcluded = (name) => {
+    if (!name) return false;
+    const lower = name.toLowerCase();
+    return excluded.some(pattern => lower.includes(pattern.toLowerCase()));
+  };
+
   const companyMap = new Map();
   for (const p of allPermits) {
     const company = (p.builder_company || '').trim();
     if (!company) continue;
+    // Skip excluded builders — they were already filtered during upsert
+    if (isExcluded(company) || isExcluded(p.builder_name)) continue;
     if (!companyMap.has(company)) companyMap.set(company, []);
     companyMap.get(company).push(p);
   }
