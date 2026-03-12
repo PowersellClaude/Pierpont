@@ -58,8 +58,8 @@ DRIVE_TIMES = {
     "City of Hanahan": 25, "Kiawah Island": 35, "Seabrook Island": 35,
     "City of Folly Beach": 35, "Town of Summerville": 35, "City of Goose Creek": 35,
     "Berkeley County": 45, "Dorchester County": 45, "Town of Moncks Corner": 50,
-    "Georgetown County": 70, "Colleton County": 70, "Town of Bluffton": 75,
-    "City of Beaufort": 80, "Town of Hilton Head Island": 80, "City of Hardeeville": 85,
+    "Colleton County": 70, "Town of Bluffton": 75,
+    "Town of Hilton Head Island": 80, "City of Hardeeville": 85,
     "Williamsburg County": 85, "Orangeburg County": 85,
 }
 
@@ -75,9 +75,7 @@ FOIA_MUNICIPALITIES = [
     {"name": "City of Folly Beach", "type": "email", "email": "permits@follybeach.gov"},
     {"name": "City of Hanahan", "type": "portal", "url": "https://cityofhanahansc.nextrequest.com/requests/new", "portal_name": "NextRequest Portal"},
     {"name": "Town of Moncks Corner", "type": "email", "email": "info@monckscornersc.gov"},
-    {"name": "Georgetown County", "type": "email", "email": "cityfoiarequest@georgetownsc.gov"},
     {"name": "Colleton County", "type": "email", "email": "foia@colletoncounty.org"},
-    {"name": "City of Beaufort", "type": "portal", "url": "https://beaufortcountysc.justfoia.com/publicportal/home/newrequest", "portal_name": "JustFOIA Portal"},
     {"name": "Williamsburg County", "type": "email", "email": "FOIA-Request@wc.sc.gov"},
     {"name": "Orangeburg County", "type": "email", "email": "foia@orangeburgcounty.org"},
 ]
