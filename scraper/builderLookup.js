@@ -6,6 +6,7 @@ const config = require('../config');
 const utils = require('./utils');
 const builderCache = require('./builder-cache');
 const buyerList = require('./buyer-list');
+const llrLookup = require('./llr-lookup');
 
 const PHONE_RE = /(?:\+1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g;
 const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
@@ -406,9 +407,8 @@ async function lookupBuilder(companyName, sharedBrowser, { skipCache = false } =
     const website = await findCompanyWebsite(companyName, page);
     if (!website) {
       utils.log(`[BuilderLookup] No website found for "${companyName}"`);
-      const empty = { website: null, phone: null, email: null, allPhones: [], allEmails: [] };
-      builderCache.set(companyName, empty);
-      return empty;
+      // Don't cache empty results — allows retry on next run
+      return { website: null, phone: null, email: null, allPhones: [], allEmails: [] };
     }
 
     utils.log(`[BuilderLookup] Found website: ${website}`);
@@ -449,10 +449,10 @@ async function bulkLookupBuilders(db, statusCallback) {
     return { total: 0, found: 0, errors: 0 };
   }
 
-  // Deduplicate by company name
+  // Deduplicate by company name (fall back to builder_name if no company)
   const companyMap = new Map();
   for (const p of permits) {
-    const company = (p.builder_company || '').trim();
+    const company = (p.builder_company || p.builder_name || '').trim();
     if (!company) continue;
     if (!companyMap.has(company)) companyMap.set(company, []);
     companyMap.get(company).push(p);
@@ -470,6 +470,12 @@ async function bulkLookupBuilders(db, statusCallback) {
     browser = await launchBrowser();
     utils.log('[BuilderLookup] Browser launched for bulk lookup');
 
+    // Health check SC LLR site once for the whole batch
+    const llrPage = await browser.newPage();
+    await llrPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
+    const llrAvailable = await llrLookup.isAvailable(llrPage);
+    utils.log(`[BuilderLookup] SC LLR site: ${llrAvailable ? 'available' : 'DOWN — will skip'}`);
+
     for (const company of uniqueCompanies) {
       processed++;
       if (statusCallback) {
@@ -478,15 +484,38 @@ async function bulkLookupBuilders(db, statusCallback) {
 
       try {
         const companyPermits = companyMap.get(company);
+        let result = null;
 
-        // Check cache first — skip web lookup entirely if we have data
+        // ── Step 1: Check cache — only trust if it has phone or email ──
         const cached = builderCache.get(company);
-        let result;
-
-        if (cached) {
-          utils.log(`[BuilderLookup] Cache hit for "${company}" => ${cached.website || 'no site'}`);
+        if (cached && (cached.phone || cached.email)) {
+          utils.log(`[BuilderLookup] Cache hit for "${company}" => ${cached.phone || 'no phone'}, ${cached.email || 'no email'}`);
           result = cached;
-        } else {
+        }
+
+        // ── Step 2: SC LLR contractor license lookup ──
+        if (!result && llrAvailable) {
+          try {
+            const llrResult = await llrLookup.lookupContractor(company, llrPage);
+            if (llrResult && (llrResult.phone || llrResult.email)) {
+              result = llrResult;
+              utils.log(`[BuilderLookup] LLR hit for "${company}" => ${llrResult.phone || 'no phone'}, ${llrResult.email || 'no email'}`);
+              builderCache.set(company, {
+                website: null,
+                phone: llrResult.phone,
+                email: llrResult.email,
+                allPhones: llrResult.allPhones || [],
+                allEmails: llrResult.allEmails || [],
+              });
+            }
+            await utils.delay(1500);
+          } catch (err) {
+            utils.log(`[BuilderLookup] LLR error for "${company}": ${err.message}`);
+          }
+        }
+
+        // ── Step 3: Web search (buyer list + Google/DDG + website scrape) ──
+        if (!result) {
           // If permits already have a website but no phone/email, re-scrape that website
           const existingWebsite = companyPermits.find(p => p.builder_website)?.builder_website;
 
@@ -499,24 +528,25 @@ async function bulkLookupBuilders(db, statusCallback) {
             try { await page.close(); } catch {}
             result = { website: existingWebsite, phone: phones[0] || null, email: emails[0] || null, allPhones: phones, allEmails: emails };
             utils.log(`[BuilderLookup] Re-scrape "${company}": ${phones.length} phone(s), ${emails.length} email(s)`);
-            builderCache.set(company, result);
+            if (result.phone || result.email) builderCache.set(company, result);
           } else {
-            result = await lookupBuilder(company, browser);
+            result = await lookupBuilder(company, browser, { skipCache: true });
           }
         }
 
-        for (const permit of companyPermits) {
-          const updates = {};
-          if (result.phone && !permit.builder_phone) updates.phone = result.phone;
-          if (result.email && !permit.builder_email) updates.email = result.email;
-          if (result.website) updates.website = result.website;
+        if (result) {
+          for (const permit of companyPermits) {
+            const updates = {};
+            if (result.phone && !permit.builder_phone) updates.phone = result.phone;
+            if (result.email && !permit.builder_email) updates.email = result.email;
+            if (result.website) updates.website = result.website;
 
-          if (Object.keys(updates).length > 0) {
-            await db.updateBuilderContact(permit.id, updates);
+            if (Object.keys(updates).length > 0) {
+              await db.updateBuilderContact(permit.id, updates);
+            }
           }
+          if (result.phone || result.email || result.website) found++;
         }
-
-        if (result.website) found++;
       } catch (err) {
         utils.log(`[BuilderLookup] Error looking up "${company}": ${err.message}`);
         errors++;
@@ -524,6 +554,8 @@ async function bulkLookupBuilders(db, statusCallback) {
 
       await new Promise(r => setTimeout(r, 2000));
     }
+
+    try { await llrPage.close(); } catch {}
   } catch (err) {
     utils.log(`[BuilderLookup] Fatal browser error: ${err.message}`);
   } finally {

@@ -200,11 +200,6 @@ async function upsertPermit(permit) {
     return { action: 'skipped', reason: 'excluded builder' };
   }
 
-  // Filter: only keep permits >= $200K or with no value
-  if (p.project_value !== null && p.project_value > 0 && p.project_value < 200000) {
-    return { action: 'skipped', reason: 'below $200K threshold' };
-  }
-
   // Auto-populate contact info from builder cache
   const companyKey = p.builder_company || p.builder_name;
   if (companyKey) {
@@ -245,8 +240,12 @@ async function queryPermits(params = {}) {
   const values = [];
 
   if (params.municipality) { conditions.push('municipality = ?'); values.push(params.municipality); }
-  if (params.min_value) { conditions.push('project_value >= ?'); values.push(Number(params.min_value)); }
-  if (params.max_value) { conditions.push('project_value <= ?'); values.push(Number(params.max_value)); }
+  if (params.no_value === '1') {
+    conditions.push('(project_value IS NULL OR project_value = 0)');
+  } else {
+    if (params.min_value) { conditions.push('project_value >= ?'); values.push(Number(params.min_value)); }
+    if (params.max_value) { conditions.push('project_value <= ?'); values.push(Number(params.max_value)); }
+  }
   if (params.date_from) { conditions.push('inspection_date >= ?'); values.push(params.date_from); }
   if (params.date_to) { conditions.push('inspection_date <= ?'); values.push(params.date_to); }
   if (params.inspection_status) { conditions.push('inspection_status = ?'); values.push(params.inspection_status); }
@@ -370,9 +369,13 @@ async function updateBuilderContact(id, data) {
 
 async function getPermitsNeedingLookup() {
   await getDb();
+  // Include permits with builder_name OR builder_company (not just company)
   return queryAll(`SELECT id, builder_name, builder_company, builder_phone, builder_email, builder_website
     FROM permits
-    WHERE (builder_company IS NOT NULL AND builder_company != '')
+    WHERE (
+        (builder_company IS NOT NULL AND builder_company != '')
+        OR (builder_name IS NOT NULL AND builder_name != '')
+      )
       AND (
         (builder_website IS NULL OR builder_website = '')
         OR (

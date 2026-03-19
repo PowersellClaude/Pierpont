@@ -330,11 +330,26 @@
           <label class="block text-xs font-medium mb-1.5" style="color:var(--text-dim)">Date To</label>
           <input type="date" id="filterDateTo" class="glass-input w-full" onchange="updateFilters()">
         </div>
-        <div class="w-28">
+        <div class="w-44">
+          <label class="block text-xs font-medium mb-1.5" style="color:var(--text-dim)">Valuation</label>
+          <select id="filterValuation" class="glass-input w-full" onchange="applyValuationFilter()">
+            <option value="">All valuations</option>
+            <option value="0-100000">Under $100K</option>
+            <option value="100000-200000">$100K - $200K</option>
+            <option value="200000-300000">$200K - $300K</option>
+            <option value="300000-500000">$300K - $500K</option>
+            <option value="500000-750000">$500K - $750K</option>
+            <option value="750000-1000000">$750K - $1M</option>
+            <option value="1000000-2000000">$1M - $2M</option>
+            <option value="2000000-">$2M+</option>
+            <option value="none">No Value Listed</option>
+          </select>
+        </div>
+        <div class="w-28 hidden">
           <label class="block text-xs font-medium mb-1.5" style="color:var(--text-dim)">Min Value</label>
           <input type="number" id="filterMinValue" placeholder="$0" class="glass-input w-full" onchange="updateFilters()">
         </div>
-        <div class="w-28">
+        <div class="w-28 hidden">
           <label class="block text-xs font-medium mb-1.5" style="color:var(--text-dim)">Max Value</label>
           <input type="number" id="filterMaxValue" placeholder="Any" class="glass-input w-full" onchange="updateFilters()">
         </div>
@@ -435,7 +450,7 @@ let currentSort = { column: 'opportunity_score', order: 'desc' };
 let currentPage = 1;
 let scrapeCheckInterval = null;
 
-let filters = { search:'', max_drive_time:'', municipality:'', date_from:'', date_to:'', min_value:'', max_value:'', inspection_status:'' };
+let filters = { search:'', max_drive_time:'', municipality:'', date_from:'', date_to:'', min_value:'', max_value:'', inspection_status:'', no_value:'' };
 
 const ENERGOV_BASE = 'https://egcss.charleston-sc.gov/EnerGov_Prod/selfservice';
 
@@ -451,6 +466,24 @@ async function loadFilterOptions() {
   } catch(e){}
 }
 
+function applyValuationFilter(){
+  const val=document.getElementById('filterValuation').value;
+  if(val==='none'){
+    document.getElementById('filterMinValue').value='';
+    document.getElementById('filterMaxValue').value='';
+    filters.no_value='1';
+  } else if(val){
+    const [min,max]=val.split('-');
+    document.getElementById('filterMinValue').value=min||'';
+    document.getElementById('filterMaxValue').value=max||'';
+    filters.no_value='';
+  } else {
+    document.getElementById('filterMinValue').value='';
+    document.getElementById('filterMaxValue').value='';
+    filters.no_value='';
+  }
+  updateFilters();
+}
 function readFiltersFromUI() {
   filters.search=document.getElementById('filterSearch').value.trim();
   filters.max_drive_time=document.getElementById('filterDistance').value;
@@ -460,6 +493,8 @@ function readFiltersFromUI() {
   filters.min_value=document.getElementById('filterMinValue').value;
   filters.max_value=document.getElementById('filterMaxValue').value;
   filters.inspection_status=document.getElementById('filterStatus').value;
+  // Preserve no_value from dropdown (don't overwrite)
+  if(!document.getElementById('filterValuation').value) filters.no_value='';
 }
 function updateFilters() { readFiltersFromUI(); renderChips(); currentPage=1; loadPermits(); }
 let debounceTimer;
@@ -473,8 +508,9 @@ function renderChips() {
     {key:'municipality',label:()=>filters.municipality,clear:()=>{document.getElementById('filterMunicipality').value='';}},
     {key:'date_from',label:()=>`From: ${filters.date_from}`,clear:()=>{document.getElementById('filterDateFrom').value='';}},
     {key:'date_to',label:()=>`To: ${filters.date_to}`,clear:()=>{document.getElementById('filterDateTo').value='';}},
-    {key:'min_value',label:()=>`Min: $${Number(filters.min_value).toLocaleString()}`,clear:()=>{document.getElementById('filterMinValue').value='';}},
-    {key:'max_value',label:()=>`Max: $${Number(filters.max_value).toLocaleString()}`,clear:()=>{document.getElementById('filterMaxValue').value='';}},
+    {key:'min_value',label:()=>`Min: $${Number(filters.min_value).toLocaleString()}`,clear:()=>{document.getElementById('filterMinValue').value='';document.getElementById('filterValuation').value='';}},
+    {key:'max_value',label:()=>`Max: $${Number(filters.max_value).toLocaleString()}`,clear:()=>{document.getElementById('filterMaxValue').value='';document.getElementById('filterValuation').value='';}},
+    {key:'no_value',label:()=>'No Value Listed',clear:()=>{filters.no_value='';document.getElementById('filterValuation').value='';}},
     {key:'inspection_status',label:()=>`${filters.inspection_status}`,clear:()=>{document.getElementById('filterStatus').value='';}},
   ];
   let has=false;
@@ -482,9 +518,9 @@ function renderChips() {
   c.classList.toggle('hidden',!has);
 }
 function clearFilter(k){const c=document.getElementById('filterChips');const ch=c.querySelector(`[data-key="${k}"]`);if(ch&&ch._clear)ch._clear();updateFilters();}
-function resetFilters(){document.getElementById('filterSearch').value='';document.getElementById('filterDistance').value='';document.getElementById('filterMunicipality').value='';document.getElementById('filterDateFrom').value='';document.getElementById('filterDateTo').value='';document.getElementById('filterMinValue').value='';document.getElementById('filterMaxValue').value='';document.getElementById('filterStatus').value='';currentPage=1;currentSort={column:'opportunity_score',order:'desc'};updateFilters();loadStats();}
+function resetFilters(){document.getElementById('filterSearch').value='';document.getElementById('filterDistance').value='';document.getElementById('filterMunicipality').value='';document.getElementById('filterDateFrom').value='';document.getElementById('filterDateTo').value='';document.getElementById('filterMinValue').value='';document.getElementById('filterMaxValue').value='';document.getElementById('filterStatus').value='';document.getElementById('filterValuation').value='';filters.no_value='';currentPage=1;currentSort={column:'opportunity_score',order:'desc'};updateFilters();loadStats();}
 
-function buildQueryParams(){const p=new URLSearchParams();if(filters.search)p.set('search',filters.search);if(filters.max_drive_time)p.set('max_drive_time',filters.max_drive_time);if(filters.municipality)p.set('municipality',filters.municipality);if(filters.date_from)p.set('date_from',filters.date_from);if(filters.date_to)p.set('date_to',filters.date_to);if(filters.min_value)p.set('min_value',filters.min_value);if(filters.max_value)p.set('max_value',filters.max_value);if(filters.inspection_status)p.set('inspection_status',filters.inspection_status);return p;}
+function buildQueryParams(){const p=new URLSearchParams();if(filters.search)p.set('search',filters.search);if(filters.max_drive_time)p.set('max_drive_time',filters.max_drive_time);if(filters.municipality)p.set('municipality',filters.municipality);if(filters.date_from)p.set('date_from',filters.date_from);if(filters.date_to)p.set('date_to',filters.date_to);if(filters.min_value)p.set('min_value',filters.min_value);if(filters.max_value)p.set('max_value',filters.max_value);if(filters.inspection_status)p.set('inspection_status',filters.inspection_status);if(filters.no_value)p.set('no_value',filters.no_value);return p;}
 
 async function loadPermits(){readFiltersFromUI();const p=buildQueryParams();p.set('sort_by',currentSort.column);p.set('sort_order',currentSort.order);p.set('page',currentPage);p.set('per_page',50);try{const r=await(await fetch(`/api/permits?${p}`)).json();renderTable(r.data);renderPagination(r.pagination);}catch(e){console.error(e);}}
 
