@@ -543,6 +543,26 @@ async function loadStats(){try{const s=await(await fetch('/api/stats')).json();d
 // ── Builder Lookup (single) ────
 async function lookupBuilder(permitId,btn){btn.disabled=true;btn.textContent='Searching...';btn.style.opacity='0.5';try{const resp=await fetch(`/api/permits/${permitId}/lookup-builder`,{method:'POST'});const data=await resp.json();if(!resp.ok){alert(data.error||'Lookup failed');return;}const phoneCell=document.getElementById(`phone-${permitId}`);const emailCell=document.getElementById(`email-${permitId}`);const websiteCell=document.getElementById(`website-${permitId}`);if(data.phone&&phoneCell)phoneCell.innerHTML=phone(data.phone);if(data.email&&emailCell)emailCell.innerHTML=email(data.email);if(data.website&&websiteCell){const host=new URL(data.website).hostname.replace(/^www\./,'');websiteCell.innerHTML=`<a href="${esc(data.website)}" target="_blank" onclick="event.stopPropagation()">${esc(host)}</a>`;}if(data.phone||data.email||data.website){btn.textContent='Found!';btn.style.background='rgba(34,197,94,0.15)';btn.style.color='#4ADE80';}else{btn.textContent='Not found';btn.style.opacity='0.4';}}catch(err){console.error(err);btn.textContent='Error';}}
 
+// ── Manual contact save ────
+async function saveContact(permitId,btn){
+  const phoneVal=document.getElementById(`edit-phone-${permitId}`).value.trim();
+  const emailVal=document.getElementById(`edit-email-${permitId}`).value.trim();
+  const websiteVal=document.getElementById(`edit-website-${permitId}`).value.trim();
+  btn.disabled=true;btn.textContent='Saving...';
+  try{
+    const resp=await fetch(`/api/permits/${permitId}/contact`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone:phoneVal,email:emailVal,website:websiteVal})});
+    const data=await resp.json();
+    if(!resp.ok){alert(data.error||'Save failed');btn.textContent='Save';btn.disabled=false;return;}
+    btn.textContent='Saved!';btn.style.background='rgba(34,197,94,0.15)';btn.style.color='#4ADE80';
+    // Update the table row too
+    const phoneCell=document.getElementById(`phone-${permitId}`);
+    const emailCell=document.getElementById(`email-${permitId}`);
+    if(phoneVal&&phoneCell)phoneCell.innerHTML=phone(phoneVal);
+    if(emailVal&&emailCell)emailCell.innerHTML=email(emailVal);
+    setTimeout(()=>{btn.textContent='Save';btn.style.background='';btn.style.color='';btn.disabled=false;},2000);
+  }catch(err){btn.textContent='Error';btn.disabled=false;}
+}
+
 // ── Selected permits tracking ────
 let selectedPermits = new Set();
 function toggleSelectAll(cb){
@@ -721,12 +741,27 @@ function renderTable(permits){
       <div><span style="color:var(--text-dim);font-size:.65rem;display:block">Inspection Type</span><span class="font-medium">${esc(p.inspection_type)||'&mdash;'}</span></div>
       <div><span style="color:var(--text-dim);font-size:.65rem;display:block">Owner</span><span class="font-medium">${esc(p.owner_name)||'&mdash;'}</span></div>
       <div><span style="color:var(--text-dim);font-size:.65rem;display:block">Builder</span><span class="font-medium">${esc(p.builder_name)||esc(p.applicant_name)||'&mdash;'}${p.builder_company?' @ '+esc(p.builder_company):''}</span></div>
-      <div><span style="color:var(--text-dim);font-size:.65rem;display:block">Biz Phone</span><span class="font-medium">${phone(p.builder_phone)}</span></div>
-      <div><span style="color:var(--text-dim);font-size:.65rem;display:block">Biz Email</span><span class="font-medium">${email(p.builder_email)}</span></div>
-      <div><span style="color:var(--text-dim);font-size:.65rem;display:block">Personal</span><span class="font-medium">${phone(p.personal_phone)} ${email(p.personal_email)}</span></div>
       <div class="md:col-span-2"><span style="color:var(--text-dim);font-size:.65rem;display:block">All Contacts</span><span class="font-medium" style="font-size:.75rem;line-height:1.6">${subsHtml}</span></div>
       <div><span style="color:var(--text-dim);font-size:.65rem;display:block">Website</span><span class="font-medium" id="website-${p.id}">${p.builder_website?`<a href="${esc(p.builder_website)}" target="_blank" onclick="event.stopPropagation()">${esc((()=>{try{return new URL(p.builder_website).hostname.replace(/^www\\./, '');}catch{return p.builder_website;}})())}</a>`:'&mdash;'}</span></div>
       <div><span style="color:var(--text-dim);font-size:.65rem;display:block">Builder Lookup</span>${(p.builder_company||p.builder_name)?`<button onclick="event.stopPropagation();lookupBuilder(${p.id},this)" style="margin-top:4px;padding:4px 14px;font-size:.7rem;font-weight:600;border-radius:9999px;background:rgba(43,108,176,0.1);color:#93C5FD;border:1px solid rgba(249,115,22,0.2);cursor:pointer;transition:all 0.2s">Lookup Contact Info</button>`:'<span style="color:var(--text-dim);font-size:.7rem">No builder info</span>'}</div>
+    </div>
+    <div style="margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.06)">
+      <div style="font-size:.65rem;color:var(--text-dim);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Edit Contact Info (saves to all permits from this builder)</div>
+      <div class="flex flex-wrap items-end gap-3">
+        <div>
+          <label style="font-size:.6rem;color:var(--text-dim);display:block;margin-bottom:2px">Phone</label>
+          <input type="text" id="edit-phone-${p.id}" value="${esc(p.builder_phone||'')}" placeholder="(843) 555-1234" class="glass-input" style="width:160px;font-size:.75rem;padding:6px 10px" onclick="event.stopPropagation()">
+        </div>
+        <div>
+          <label style="font-size:.6rem;color:var(--text-dim);display:block;margin-bottom:2px">Email</label>
+          <input type="text" id="edit-email-${p.id}" value="${esc(p.builder_email||'')}" placeholder="builder@email.com" class="glass-input" style="width:220px;font-size:.75rem;padding:6px 10px" onclick="event.stopPropagation()">
+        </div>
+        <div>
+          <label style="font-size:.6rem;color:var(--text-dim);display:block;margin-bottom:2px">Website</label>
+          <input type="text" id="edit-website-${p.id}" value="${esc(p.builder_website||'')}" placeholder="https://..." class="glass-input" style="width:220px;font-size:.75rem;padding:6px 10px" onclick="event.stopPropagation()">
+        </div>
+        <button onclick="event.stopPropagation();saveContact(${p.id},this)" class="btn-primary" style="padding:6px 16px;font-size:.75rem;border-radius:8px">Save</button>
+      </div>
     </div></td>`;
     tbody.appendChild(dr);
   });

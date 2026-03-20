@@ -146,6 +146,42 @@ app.patch('/api/permits/:id/email-sent', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ─── Manual contact save (saves to DB + builder cache) ──────────────────────
+app.patch('/api/permits/:id/contact', async (req, res) => {
+  try {
+    const permit = await db.getPermitById(Number(req.params.id));
+    if (!permit) return res.status(404).json({ error: 'Permit not found' });
+
+    const { phone, email, website } = req.body;
+    const updates = {};
+    if (phone !== undefined) updates.phone = phone || null;
+    if (email !== undefined) updates.email = email || null;
+    if (website !== undefined) updates.website = website || null;
+
+    if (Object.keys(updates).length === 0) return res.status(400).json({ error: 'No fields to update' });
+
+    // Save to permit record
+    await db.updateBuilderContact(permit.id, updates);
+
+    // Save to builder cache so ALL future permits from this builder auto-populate
+    const companyKey = permit.builder_company || permit.builder_name;
+    if (companyKey) {
+      const builderCache = require('./scraper/builder-cache');
+      const existing = builderCache.get(companyKey) || {};
+      builderCache.set(companyKey, {
+        website: updates.website !== undefined ? updates.website : (existing.website || null),
+        phone: updates.phone !== undefined ? updates.phone : (existing.phone || null),
+        email: updates.email !== undefined ? updates.email : (existing.email || null),
+        allPhones: existing.allPhones || [],
+        allEmails: existing.allEmails || [],
+      });
+      console.log(`[ManualSave] "${companyKey}" => phone: ${updates.phone || 'unchanged'}, email: ${updates.email || 'unchanged'} — saved to cache`);
+    }
+
+    res.json({ message: 'Contact info saved', updates });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ─── Scraper API ─────────────────────────────────────────────────────────────
 let scrapeInProgress = false;
 let builderLookupInProgress = false;
