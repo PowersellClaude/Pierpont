@@ -225,7 +225,8 @@ async function runAllScrapers(options = {}) {
 
           // ── Step 3: Web search (DuckDuckGo + website scrape) ──
           if (!contactData) {
-            const result = await lookupBuilder(company, lookupBrowser);
+            const builderName = permits.find(p => p.builder_name)?.builder_name || null;
+            const result = await lookupBuilder(company, lookupBrowser, { builderName });
             if (result && (result.phone || result.email || result.website)) {
               contactData = result;
               source = 'web';
