@@ -574,12 +574,18 @@ function cleanAddress(addr){
   return addr.replace(/\s{2,}/g,' ').trim()
     .split(' ').map(w=>w.charAt(0).toUpperCase()+w.slice(1).toLowerCase()).join(' ');
 }
+function titleCase(s){
+  if(!s)return '';
+  return s.split(/\s+/).map(w=>w.charAt(0).toUpperCase()+w.slice(1).toLowerCase()).join(' ');
+}
 function buildMailtoUrl(permit){
   const fullName=permit.builder_name||permit.builder_company||'Builder';
   const firstName=fullName.split(/\s+/)[0];
   const builderName=firstName.charAt(0).toUpperCase()+firstName.slice(1).toLowerCase();
+  const companyName=titleCase(permit.builder_company||permit.builder_name||'');
   const address=cleanAddress(permit.address);
-  const subject=encodeURIComponent(`Drywall Bid – ${address}`);
+  const builderAddress=companyName?`${companyName} - ${address}`:address;
+  const subject=encodeURIComponent(`Drywall Bid – ${builderAddress}`);
   const stevenSig=`Steven Dolloff
 Owner / President
 Pierpont Construction
@@ -597,7 +603,9 @@ Justin.PierpontConstruction@gmail.com`;
   }
   const body=encodeURIComponent(`Hey ${builderName},
 
-We noticed an upcoming project at ${address} and wanted to reach out to see if you are currently accepting bids for the drywall scope.
+We noticed an upcoming project and wanted to reach out to see if you are currently accepting bids for the drywall scope.
+
+*${builderAddress}*
 
 Pierpont Construction has been providing drywall services in the Charleston area since 2004, specializing in both new construction and remodels. We currently drywall 10-20 homes per month and support over 80 builders and contractors throughout the area.
 
@@ -607,11 +615,20 @@ If this project is currently being bid, we would appreciate the opportunity to p
 
 Below are a few references for your review:
 
-• Greg – St Pierre Construction – (843) 478-6005
-• Sam Rhodes – Rhodes Construction – (843) 442-1162
-• Michael Daly – Daly & Sawyer – (843) 224-6131
-• Zac – Naramore Construction – (843) 296-4579
-• Jay Sifly – Sifly Homes – (843) 303-1222
+St Pierre Construction - Greg
+(843) 478-6005
+
+Rhodes Construction - Sam Rhodes
+(843) 442-1162
+
+Daly & Sawyer - Michael Daly
+(843) 224-6131
+
+Naramore Construction - Zac
+(843) 296-4579
+
+Sifly Homes - Jay Sifly
+(843) 303-1222
 
 Pierpont Construction is fully insured, carrying both Worker's Comp and Liability insurance.
 
