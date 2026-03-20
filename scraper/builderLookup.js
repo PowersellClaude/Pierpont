@@ -456,34 +456,91 @@ async function searchFacebookBusiness(companyName, page) {
 
     utils.log(`[Facebook] Found page for "${companyName}": ${fbLink}`);
 
-    // Navigate to the Facebook page
+    const allFbPhones = [];
+    const allFbEmails = [];
+
+    // Helper to extract contacts from current FB page
+    async function scrapeFbPage() {
+      await new Promise(r => setTimeout(r, 2000));
+      // Scroll to load all lazy content
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await new Promise(r => setTimeout(r, 1500));
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight / 2));
+      await new Promise(r => setTimeout(r, 500));
+
+      const result = await page.evaluate(() => {
+        const phoneRe = /(?:\+1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g;
+        const emailRe = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+        const skipDomains = ['facebook.com', 'fb.com', 'facebookmail.com', 'fbcdn.net'];
+
+        const text = document.body.innerText || '';
+        const html = document.body.innerHTML || '';
+
+        // Also check mailto: links in the HTML
+        const mailtoMatches = html.match(/mailto:([^"'?&\s]+)/gi) || [];
+        const mailtoEmails = mailtoMatches.map(m => m.replace(/^mailto:/i, '').toLowerCase());
+
+        // Check tel: links
+        const telMatches = html.match(/href=["']tel:([^"']+)["']/gi) || [];
+        const telPhones = telMatches.map(m => m.replace(/href=["']tel:\s*/i, '').replace(/["']$/, ''));
+
+        const phones = [...new Set([
+          ...(text.match(phoneRe) || []),
+          ...telPhones,
+        ])];
+
+        const emails = [...new Set([
+          ...(text.match(emailRe) || []),
+          ...mailtoEmails,
+        ]).values()].filter(e => {
+          const lower = e.toLowerCase();
+          return !skipDomains.some(d => lower.includes(d));
+        });
+
+        return { phones, emails };
+      });
+
+      return result;
+    }
+
+    // Visit the main page first
     await page.goto(fbLink, { waitUntil: 'networkidle2', timeout: 12000 });
-    await new Promise(r => setTimeout(r, 2000));
+    let result = await scrapeFbPage();
+    result.phones.filter(isValidPhone).forEach(p => allFbPhones.push(p));
+    result.emails.filter(isValidEmail).forEach(e => allFbEmails.push(e));
 
-    // Extract contact info from the visible page content
-    const result = await page.evaluate(() => {
-      const phoneRe = /\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g;
-      const emailRe = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
-      const text = document.body.innerText || '';
+    // If we didn't find email, try the /about page (where FB shows contact info)
+    if (allFbEmails.length === 0 || allFbPhones.length === 0) {
+      const aboutUrl = fbLink.replace(/\/$/, '') + '/about';
+      try {
+        await page.goto(aboutUrl, { waitUntil: 'networkidle2', timeout: 12000 });
+        result = await scrapeFbPage();
+        result.phones.filter(isValidPhone).forEach(p => allFbPhones.push(p));
+        result.emails.filter(isValidEmail).forEach(e => allFbEmails.push(e));
+      } catch {}
+    }
 
-      const phones = [...new Set(text.match(phoneRe) || [])];
-      const emails = [...new Set((text.match(emailRe) || []).filter(e =>
-        !e.includes('facebook.com') && !e.includes('fb.com')
-      ))];
+    // Also try /about_contact_and_basic_info (Facebook's detailed contact section)
+    if (allFbEmails.length === 0 || allFbPhones.length === 0) {
+      const contactUrl = fbLink.replace(/\/$/, '') + '/about_contact_and_basic_info';
+      try {
+        await page.goto(contactUrl, { waitUntil: 'networkidle2', timeout: 12000 });
+        result = await scrapeFbPage();
+        result.phones.filter(isValidPhone).forEach(p => allFbPhones.push(p));
+        result.emails.filter(isValidEmail).forEach(e => allFbEmails.push(e));
+      } catch {}
+    }
 
-      return { phones, emails };
-    });
+    const uniquePhones = [...new Set(allFbPhones)];
+    const uniqueEmails = [...new Set(allFbEmails)];
 
-    const validPhones = result.phones.filter(isValidPhone);
-    const validEmails = result.emails.filter(isValidEmail);
-
-    if (validPhones.length || validEmails.length) {
-      utils.log(`[Facebook] "${companyName}": ${validPhones.length} phone(s), ${validEmails.length} email(s)`);
+    if (uniquePhones.length || uniqueEmails.length) {
+      utils.log(`[Facebook] "${companyName}": ${uniquePhones.length} phone(s), ${uniqueEmails.length} email(s)`);
     }
 
     return {
-      phone: validPhones[0] || null,
-      email: validEmails[0] || null,
+      phone: uniquePhones[0] || null,
+      email: uniqueEmails[0] || null,
     };
   } catch (err) {
     utils.log(`[Facebook] Error for "${companyName}": ${err.message}`);
