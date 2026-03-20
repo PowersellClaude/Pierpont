@@ -200,10 +200,10 @@ async function upsertPermit(permit) {
     return { action: 'skipped', reason: 'excluded builder' };
   }
 
-  // Auto-populate contact info from builder cache
+  // Auto-populate contact info from builder cache (exact + fuzzy match)
   const companyKey = p.builder_company || p.builder_name;
   if (companyKey) {
-    const cached = builderCache.get(companyKey);
+    const cached = builderCache.get(companyKey) || builderCache.getWithFuzzy(companyKey);
     if (cached) {
       if (!p.builder_phone && cached.phone) p.builder_phone = cached.phone;
       if (!p.builder_email && cached.email) p.builder_email = cached.email;
@@ -468,7 +468,7 @@ async function restoreContactsFromCache() {
   for (const row of rows) {
     const company = row.builder_company || row.builder_name;
     if (!company) continue;
-    const cached = builderCache.get(company);
+    const cached = builderCache.get(company) || builderCache.getWithFuzzy(company);
     if (!cached || (!cached.phone && !cached.email)) continue;
 
     const updates = [];

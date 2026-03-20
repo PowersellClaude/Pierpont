@@ -32,10 +32,34 @@ function saveCache() {
   }
 }
 
-// Normalize company name for cache key: lowercase, trim, collapse whitespace
+// Normalize company name for cache key: lowercase, trim, collapse whitespace, strip suffixes
 function normalizeKey(name) {
   if (!name) return null;
-  return name.toLowerCase().trim().replace(/\s+/g, ' ').replace(/[.,]+$/, '');
+  return name.toLowerCase().trim()
+    .replace(/,?\s*(llc|inc\.?|corp\.?|co\.?|l\.?l\.?c\.?|incorporated|corporation|company|group|enterprises?)\.?$/i, '')
+    .replace(/\s+/g, ' ')
+    .replace(/[.,]+$/, '')
+    .trim();
+}
+
+// Also try alternate keys for fuzzy matching
+function getWithFuzzy(companyName) {
+  loadCache();
+  const key = normalizeKey(companyName);
+  if (!key) return null;
+  // Exact match first
+  if (cache[key]) return cache[key];
+  // Try without common suffixes that normalizeKey might not catch
+  const shorter = key.replace(/\s*(construction|builders?|homes?|building|contracting|enterprises?|services?)$/i, '').trim();
+  if (shorter && shorter !== key && cache[shorter]) return cache[shorter];
+  // Try matching the other direction — check if any cache key starts with our name
+  for (const [k, v] of Object.entries(cache)) {
+    if (k.startsWith('__')) continue;
+    if (k.startsWith(shorter) || shorter.startsWith(k)) {
+      if (v.phone || v.email) return v;
+    }
+  }
+  return null;
 }
 
 // Look up a builder in the cache. Returns { website, phone, email, allPhones, allEmails } or null.
@@ -97,4 +121,4 @@ function setDirectoryLastCrawled() {
   saveCache();
 }
 
-module.exports = { get, set, has, stats, loadCache, saveCache, normalizeKey, getDirectoryLastCrawled, setDirectoryLastCrawled, CACHE_PATH };
+module.exports = { get, getWithFuzzy, set, has, stats, loadCache, saveCache, normalizeKey, getDirectoryLastCrawled, setDirectoryLastCrawled, CACHE_PATH };
