@@ -515,6 +515,22 @@ async function start() {
     console.log(`📧 Daily email: ${process.env.EMAIL_FROM ? 'configured' : 'NOT configured (set EMAIL_FROM, EMAIL_TO, EMAIL_APP_PASSWORD)'}`);
     if (process.env.EMAIL_FROM) console.log(`   From: ${process.env.EMAIL_FROM} → To: ${process.env.EMAIL_TO || process.env.EMAIL_FROM}`);
     console.log('');
+
+    // Auto-run scrape on launch (today's permits only, non-blocking)
+    console.log('🚀 Auto-running scrape on launch...');
+    setTimeout(() => {
+      if (!scrapeInProgress) {
+        scrapeInProgress = true;
+        const today = new Date().toISOString().split('T')[0];
+        scraper.runAllScrapers({ dateFrom: today, dateTo: today, days: 1 })
+          .then((result) => {
+            console.log(`🚀 Auto-scrape complete: ${result.permitsFound} permits (${result.permitsNew} new)`);
+            runBuilderLookupAfterScrape();
+          })
+          .catch((err) => console.error('Auto-scrape error:', err))
+          .finally(() => { scrapeInProgress = false; });
+      }
+    }, 3000); // 3 second delay to let server fully initialize
   });
 }
 start();

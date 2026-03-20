@@ -761,10 +761,11 @@ async function scrapeContactInfo(websiteUrl, page) {
 
   const visited = new Set();
   const MAX_PAGES = 15; // Don't crawl forever
+  const socialLinks = []; // Facebook, LinkedIn, Instagram links found on the builder's site
 
   function hasFullContact() { return allPhones.size > 0 && allEmails.size > 0; }
 
-  // Helper: scrape a single page via axios and discover ALL internal links
+  // Helper: scrape a single page via axios and discover ALL internal links + social links
   async function scrapePage(url) {
     if (visited.has(url)) return [];
     visited.add(url);
@@ -783,12 +784,29 @@ async function scrapeContactInfo(websiteUrl, page) {
       phones.forEach(p => allPhones.add(p));
       emails.forEach(e => allEmails.add(e));
 
-      // Discover ALL internal links on this page (not just "contact" ones)
+      // Discover ALL links on this page
       const discoveredLinks = new Set();
       $('a[href]').each((_, el) => {
         const href = $(el).attr('href') || '';
         try {
           const full = href.startsWith('http') ? href : new URL(href, baseUrl).href;
+          const hostname = new URL(full).hostname.toLowerCase();
+
+          // Collect social media links found on the builder's own site
+          if (hostname.includes('facebook.com') && !full.includes('/sharer') && !full.includes('/share')
+              && !full.includes('/login') && !full.includes('/signup') && !full.includes('facebook.com/tr')) {
+            if (!socialLinks.some(l => l.url === full)) socialLinks.push({ url: full, type: 'facebook' });
+            return;
+          }
+          if (hostname.includes('linkedin.com') && !full.includes('/share')) {
+            if (!socialLinks.some(l => l.url === full)) socialLinks.push({ url: full, type: 'linkedin' });
+            return;
+          }
+          if (hostname.includes('instagram.com')) {
+            if (!socialLinks.some(l => l.url === full)) socialLinks.push({ url: full, type: 'instagram' });
+            return;
+          }
+
           // Only follow internal links on the same domain
           if (!full.startsWith(baseUrl)) return;
           // Skip anchors, files, and query-heavy URLs
@@ -907,6 +925,55 @@ async function scrapeContactInfo(websiteUrl, page) {
       for (const p of ['/contact', '/contact-us', '/about', '/about-us', '/team']) {
         if (hasFullContact()) break;
         await scrapePagePuppeteer(baseUrl + p);
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Phase 5: Follow social media links found ON the builder's website
+  // Their Facebook/LinkedIn/Instagram page often has phone/email
+  // ══════════════════════════════════════════════════════════════════════════
+  if (!hasFullContact() && socialLinks.length > 0 && page) {
+    utils.log(`[WebScrape] ${websiteUrl}: found ${socialLinks.length} social link(s) on site, following for contact info...`);
+
+    for (const social of socialLinks.slice(0, 3)) {
+      if (hasFullContact()) break;
+      try {
+        await page.goto(social.url, { waitUntil: 'networkidle2', timeout: 12000 });
+        await new Promise(r => setTimeout(r, 2000));
+
+        // Scroll to load lazy content
+        await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+        await new Promise(r => setTimeout(r, 1000));
+
+        const result = await page.evaluate((socialType) => {
+          const phoneRe = /(?:\+1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g;
+          const emailRe = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+          const text = document.body.innerText || '';
+
+          const phones = [...new Set(text.match(phoneRe) || [])];
+          // Filter out emails from the social platform itself
+          const skipDomains = ['facebook.com', 'fb.com', 'instagram.com', 'linkedin.com',
+            'facebookmail.com', 'licdn.com', 'fbcdn.net'];
+          const emails = [...new Set((text.match(emailRe) || []).filter(e => {
+            const lower = e.toLowerCase();
+            return !skipDomains.some(d => lower.includes(d));
+          }))];
+
+          return { phones, emails };
+        }, social.type);
+
+        const validPhones = result.phones.filter(isValidPhone);
+        const validEmails = result.emails.filter(isValidEmail);
+
+        validPhones.forEach(p => allPhones.add(p));
+        validEmails.forEach(e => allEmails.add(e));
+
+        if (validPhones.length || validEmails.length) {
+          utils.log(`[WebScrape] ${social.type} page: found ${validPhones.length} phone(s), ${validEmails.length} email(s)`);
+        }
+      } catch (err) {
+        utils.log(`[WebScrape] Error visiting ${social.type} link: ${err.message}`);
       }
     }
   }
