@@ -1,6 +1,5 @@
 node_modules/
 db/permits.db
-db/builder-cache.json
 screenshots/
 seen_permits.json
 .env

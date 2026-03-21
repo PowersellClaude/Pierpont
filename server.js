@@ -365,6 +365,33 @@ app.get('/api/opportunities', async (req, res) => {
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ─── Builder Cache Export/Import (persist across deploys via git) ────────────
+app.get('/api/builder-cache/export', (req, res) => {
+  try {
+    const data = builderCache.loadCache();
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', 'attachment; filename="builder-cache.json"');
+    res.send(JSON.stringify(data, null, 2));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/builder-cache/import', async (req, res) => {
+  try {
+    const data = req.body;
+    if (!data || typeof data !== 'object') return res.status(400).json({ error: 'Invalid JSON' });
+    let imported = 0;
+    for (const [key, value] of Object.entries(data)) {
+      if (key.startsWith('__')) { builderCache.loadCache()[key] = value; continue; }
+      if (!builderCache.has(key) || (!builderCache.get(key)?.phone && value.phone)) {
+        builderCache.set(key, value);
+        imported++;
+      }
+    }
+    builderCache.saveCache();
+    res.json({ message: `Imported ${imported} builder entries`, total: builderCache.stats().total });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ─── Clear All Data ──────────────────────────────────────────────────────────
 app.delete('/api/clear', async (req, res) => {
   try {
