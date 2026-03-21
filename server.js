@@ -633,7 +633,7 @@ async function start() {
     if (process.env.EMAIL_FROM) console.log(`   From: ${process.env.EMAIL_FROM} → To: ${process.env.EMAIL_TO || process.env.EMAIL_FROM}`);
     console.log('');
 
-    // Smart auto-scrape: check DB state and only scrape what's needed
+    // Smart auto-scrape: wait 15s for health check to pass first
     setTimeout(async () => {
       try {
         const lastRun = await db.getLatestScrapeRun();
@@ -681,7 +681,7 @@ async function start() {
       } catch (err) {
         console.error('Auto-scrape check error:', err);
       }
-    }, 3000);
+    }, 15000); // 15s delay — let health check pass before scraping
   });
 }
 start();
