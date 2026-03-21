@@ -446,18 +446,26 @@ module.exports = {
     let contractors = [];
     let owner = null;
 
+    let contactPhone = null;
+    let contactEmail = null;
     for (const contact of contacts) {
       const type = (contact.ContactTypeName || '').toLowerCase();
       const fullName = [contact.FirstName, contact.LastName].filter(Boolean).join(' ');
       const company = contact.GlobalEntityName || null;
+      const cPhone = contact.PhoneNumber || contact.Phone || contact.BusinessPhone || contact.CellPhone || contact.MobilePhone || null;
+      const cEmail = contact.EmailAddress || contact.Email || null;
 
-      allContacts.push({ type: contact.ContactTypeName, name: fullName || null, company });
+      allContacts.push({ type: contact.ContactTypeName, name: fullName || null, company, phone: cPhone, email: cEmail });
 
       if (type.includes('applicant')) {
         if (!applicant) applicant = fullName || null;
         if (!applicantCompany && company) applicantCompany = company;
+        if (!contactPhone && cPhone) contactPhone = cPhone;
+        if (!contactEmail && cEmail) contactEmail = cEmail;
       } else if (type.includes('contractor') || type.includes('builder')) {
-        contractors.push({ name: fullName || null, company });
+        contractors.push({ name: fullName || null, company, phone: cPhone, email: cEmail });
+        if (!contactPhone && cPhone) contactPhone = cPhone;
+        if (!contactEmail && cEmail) contactEmail = cEmail;
       } else if (type.includes('owner')) {
         if (!owner) owner = fullName || null;
       }
@@ -465,6 +473,8 @@ module.exports = {
 
     permitData.builder_name = applicant || (contractors[0]?.name) || null;
     permitData.builder_company = applicantCompany || (contractors[0]?.company) || null;
+    permitData.builder_phone = contactPhone || (contractors[0]?.phone) || null;
+    permitData.builder_email = contactEmail || (contractors[0]?.email) || null;
     permitData.owner_name = owner || null;
     permitData._allContacts = allContacts;
     permitData._contractors = contractors;
@@ -532,18 +542,26 @@ module.exports = {
       let contractors = [];
       let owner = null;
 
+      let contactPhone2 = null;
+      let contactEmail2 = null;
       for (const contact of contacts) {
         const type = (contact.ContactTypeName || '').toLowerCase();
         const fullName = [contact.FirstName, contact.LastName].filter(Boolean).join(' ');
         const company = contact.GlobalEntityName || null;
+        const cPhone = contact.PhoneNumber || contact.Phone || contact.BusinessPhone || contact.CellPhone || contact.MobilePhone || null;
+        const cEmail = contact.EmailAddress || contact.Email || null;
 
-        allContacts.push({ type: contact.ContactTypeName, name: fullName || null, company });
+        allContacts.push({ type: contact.ContactTypeName, name: fullName || null, company, phone: cPhone, email: cEmail });
 
         if (type.includes('applicant')) {
           if (!applicant) applicant = fullName || null;
           if (!applicantCompany && company) applicantCompany = company;
+          if (!contactPhone2 && cPhone) contactPhone2 = cPhone;
+          if (!contactEmail2 && cEmail) contactEmail2 = cEmail;
         } else if (type.includes('contractor') || type.includes('builder')) {
-          contractors.push({ name: fullName || null, company });
+          contractors.push({ name: fullName || null, company, phone: cPhone, email: cEmail });
+          if (!contactPhone2 && cPhone) contactPhone2 = cPhone;
+          if (!contactEmail2 && cEmail) contactEmail2 = cEmail;
         } else if (type.includes('owner')) {
           if (!owner) owner = fullName || null;
         }
@@ -551,11 +569,13 @@ module.exports = {
 
       detailData.builder_name = applicant || (contractors[0]?.name) || null;
       detailData.builder_company = applicantCompany || (contractors[0]?.company) || null;
+      detailData.builder_phone = contactPhone2 || (contractors[0]?.phone) || null;
+      detailData.builder_email = contactEmail2 || (contractors[0]?.email) || null;
       detailData.owner_name = owner || null;
       detailData._allContacts = allContacts;
       detailData._contractors = contractors;
 
-      for (const key of ['builder_name', 'builder_company', 'owner_name', 'project_value']) {
+      for (const key of ['builder_name', 'builder_company', 'builder_phone', 'builder_email', 'owner_name', 'project_value']) {
         if (detailData[key]) enriched[key] = detailData[key];
       }
 

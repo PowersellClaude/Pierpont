@@ -83,6 +83,8 @@ module.exports = {
               municipality: municipalityConfig.name,
               builder_name: attrs.ContractorName || attrs.Contractor || attrs.Applicant,
               builder_company: attrs.ContractorCompany || attrs.CompanyName,
+              builder_phone: attrs.ContractorPhone || attrs.Phone || attrs.ContactPhone || null,
+              builder_email: attrs.ContractorEmail || attrs.Email || attrs.ContactEmail || null,
               owner_name: attrs.OwnerName || attrs.Owner || attrs.PropertyOwner,
               project_value: value,
               permit_type: attrs.PermitType || attrs.Type || attrs.WorkType,

@@ -219,6 +219,8 @@ function mapEnerGovEntity(entity, municipalityName, portalUrl) {
     builder_name: entity.ContractorName ||
       (entity.HolderFirstName ? [entity.HolderFirstName, entity.HolderLastName].filter(Boolean).join(' ') : null),
     builder_company: entity.CompanyName || entity.HolderCompanyName || null,
+    builder_phone: entity.ContractorPhone || entity.PhoneNumber || entity.Phone || null,
+    builder_email: entity.ContractorEmail || entity.EmailAddress || entity.Email || null,
     applicant_name: entity.ApplicantName || null,
     owner_name: entity.OwnerName || null,
     project_value: entity.ProjectValue || entity.EstimatedValue || null,

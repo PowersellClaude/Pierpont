@@ -206,6 +206,8 @@ module.exports = {
               municipality: municipalityConfig.name,
               builder_name: record.contractor || record.builderName,
               builder_company: record.contractorCompany || record.builderCompany,
+              builder_phone: record.contractorPhone || record.builderPhone || record.phone || null,
+              builder_email: record.contractorEmail || record.builderEmail || record.email || null,
               applicant_name: record.applicant || record.applicantName,
               owner_name: record.owner || record.ownerName,
               project_value: value,
