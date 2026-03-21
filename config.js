@@ -8,7 +8,7 @@ module.exports = {
   },
 
   database: {
-    path: process.env.DB_PATH || require('path').join(__dirname, 'db', 'permits.db'),
+    path: process.env.DB_PATH || require('path').join(__dirname, 'data', 'permits.db'),
   },
 
   scraper: {

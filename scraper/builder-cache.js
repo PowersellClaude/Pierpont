@@ -2,7 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const CACHE_PATH = path.join(__dirname, '..', 'db', 'builder-cache.json');
+const CACHE_PATH = path.join(__dirname, '..', 'data', 'builder-cache.json');
 
 let cache = null;
 

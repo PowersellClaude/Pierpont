@@ -20,7 +20,7 @@ const fs = require('fs');
 // ─── Auto-sync builder cache to GitHub repo ─────────────────────────────────
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
 const GITHUB_REPO = 'PowersellClaude/Pierpont';
-const CACHE_FILE_PATH = 'db/builder-cache.json';
+const CACHE_FILE_PATH = 'data/builder-cache.json';
 let lastCacheSyncCount = 0;
 
 async function syncCacheToGitHub() {

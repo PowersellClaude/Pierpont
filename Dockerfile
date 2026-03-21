@@ -19,8 +19,7 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 
 COPY . .
-# Ensure db directory exists (volume mounts here)
-RUN mkdir -p /app/db
+RUN mkdir -p /app/db /app/data
 
 EXPOSE 3000
 
