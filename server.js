@@ -14,6 +14,55 @@ const crypto = require('crypto');
 
 const builderCache = require('./scraper/builder-cache');
 const buyerList = require('./scraper/buyer-list');
+const https = require('https');
+const fs = require('fs');
+
+// ─── Auto-sync builder cache to GitHub repo ─────────────────────────────────
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
+const GITHUB_REPO = 'PowersellClaude/Pierpont';
+const CACHE_FILE_PATH = 'db/builder-cache.json';
+let lastCacheSyncCount = 0;
+
+async function syncCacheToGitHub() {
+  if (!GITHUB_TOKEN) { console.log('[GitSync] No GITHUB_TOKEN set — skipping cache sync'); return; }
+  const cacheStats = builderCache.stats();
+  // Only sync if new builders were added since last sync
+  if (cacheStats.total <= lastCacheSyncCount) return;
+
+  try {
+    const cacheData = JSON.stringify(builderCache.loadCache(), null, 2);
+
+    // Get current file SHA (required for update)
+    const getRes = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/contents/${CACHE_FILE_PATH}`, {
+      headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github.v3+json' },
+    });
+    const getJson = await getRes.json();
+    const sha = getJson.sha || null;
+
+    // Update file in repo
+    const body = {
+      message: `Auto-update builder cache (${cacheStats.total} builders, ${cacheStats.withPhone} phones, ${cacheStats.withEmail} emails)`,
+      content: Buffer.from(cacheData).toString('base64'),
+      ...(sha ? { sha } : {}),
+    };
+
+    const putRes = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/contents/${CACHE_FILE_PATH}`, {
+      method: 'PUT',
+      headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Content-Type': 'application/json', 'Accept': 'application/vnd.github.v3+json' },
+      body: JSON.stringify(body),
+    });
+
+    if (putRes.ok) {
+      lastCacheSyncCount = cacheStats.total;
+      console.log(`[GitSync] Builder cache synced to GitHub: ${cacheStats.total} builders (${cacheStats.withPhone} phones, ${cacheStats.withEmail} emails)`);
+    } else {
+      const err = await putRes.text();
+      console.error(`[GitSync] Failed to sync: ${putRes.status} ${err}`);
+    }
+  } catch (err) {
+    console.error(`[GitSync] Sync error: ${err.message}`);
+  }
+}
 const dailyEmail = require('./scraper/daily-email');
 const foiaParser = require('./scraper/foia-parser');
 const multer = require('multer');
@@ -179,6 +228,8 @@ app.patch('/api/permits/:id/contact', async (req, res) => {
     }
 
     res.json({ message: 'Contact info saved', updates });
+    // Sync updated cache to GitHub
+    syncCacheToGitHub().catch(e => console.error('[GitSync] Error:', e.message));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -198,6 +249,8 @@ async function runBuilderLookupAfterScrape() {
     builderLookupStatus = { status: 'error', error: err.message };
   } finally {
     builderLookupInProgress = false;
+    // Auto-sync cache to GitHub so it persists across deploys
+    syncCacheToGitHub().catch(e => console.error('[GitSync] Error:', e.message));
   }
 }
 
