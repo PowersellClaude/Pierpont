@@ -1013,11 +1013,12 @@ async function scrapeContactInfo(websiteUrl, page) {
   utils.log(`[WebScrape] ${websiteUrl}: crawled ${pagesScraped} pages total, ${allPhones.size} phone(s), ${allEmails.size} email(s)`);
 
   // ══════════════════════════════════════════════════════════════════════════
-  // Phase 4: If STILL nothing, try Puppeteer (JS-rendered sites like React/Vue)
-  // Re-visit the key pages with a real browser
+  // Phase 4: Puppeteer pass — ALWAYS run if missing phone or email
+  // Most builder sites are WordPress/Wix/Squarespace — emails are rendered
+  // by JavaScript and invisible to axios. Puppeteer sees everything.
   // ══════════════════════════════════════════════════════════════════════════
-  if (allPhones.size === 0 && allEmails.size === 0 && page) {
-    utils.log(`[WebScrape] ${websiteUrl}: no contacts found via axios, trying Puppeteer...`);
+  if (!hasFullContact() && page) {
+    utils.log(`[WebScrape] ${websiteUrl}: missing ${allPhones.size===0?'phone':''}${allPhones.size===0&&allEmails.size===0?' + ':''}${allEmails.size===0?'email':''} — trying Puppeteer...`);
     visited.clear();
     await scrapePagePuppeteer(websiteUrl);
 
