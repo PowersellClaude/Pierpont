@@ -686,13 +686,22 @@ async function toggleEmailSent(id,sent){
     await fetch(`/api/permits/${id}/email-sent`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({sent})});
   }catch(e){}
 }
+async function undoEmailSent(id,btn){
+  await toggleEmailSent(id,false);
+  btn.parentElement.remove();
+  loadPermits();
+}
 function markEmailSentOnClick(permitId,el){
-  // Mark as sent after a short delay (let the mailto: open first)
+  // Let the mailto open, then ask if they sent it
   setTimeout(()=>{
-    toggleEmailSent(permitId,true);
-    // Replace button with checkmark in the UI
-    el.parentElement.innerHTML='<span style="color:#4ADE80;font-size:.75rem" title="Email sent">&#x2713; Sent</span>';
-  },500);
+    if(confirm('Did you send this email?')){
+      toggleEmailSent(permitId,true);
+      el.parentElement.innerHTML='<span style="color:#4ADE80;font-size:.75rem" title="Email sent">&#x2713; Sent</span>';
+      // Update the emailed column too
+      const emailedCell=el.closest('tr')?.previousElementSibling?.querySelector('td:nth-last-child(2)');
+      if(emailedCell)emailedCell.innerHTML='<span style="color:#4ADE80;font-size:.9rem" title="Email sent">&#x2713;</span>';
+    }
+  },1000);
 }
 
 // ── Table ────
@@ -752,6 +761,10 @@ function renderTable(permits){
       <div><span style="color:var(--text-dim);font-size:.65rem;display:block">Website</span><span class="font-medium" id="website-${p.id}">${p.builder_website?`<a href="${esc(p.builder_website)}" target="_blank" onclick="event.stopPropagation()">${esc((()=>{try{return new URL(p.builder_website).hostname.replace(/^www\\./, '');}catch{return p.builder_website;}})())}</a>`:'&mdash;'}</span></div>
       <div><span style="color:var(--text-dim);font-size:.65rem;display:block">Builder Lookup</span>${(p.builder_company||p.builder_name)?`<button onclick="event.stopPropagation();lookupBuilder(${p.id},this)" style="margin-top:4px;padding:4px 14px;font-size:.7rem;font-weight:600;border-radius:9999px;background:rgba(43,108,176,0.1);color:#93C5FD;border:1px solid rgba(249,115,22,0.2);cursor:pointer;transition:all 0.2s">Lookup Contact Info</button>`:'<span style="color:var(--text-dim);font-size:.7rem">No builder info</span>'}</div>
     </div>
+    ${p.email_sent?`<div style="margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;gap:12px">
+      <span style="color:#4ADE80;font-size:.8rem;font-weight:600">&#x2713; Email Sent</span>
+      <button onclick="event.stopPropagation();undoEmailSent(${p.id},this)" class="btn-glass" style="padding:4px 12px;font-size:.7rem;border-radius:6px;color:#FCA5A5;border-color:rgba(239,68,68,0.2)">Undo — Mark as Not Sent</button>
+    </div>`:''}
     <div style="margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.06)">
       <div style="font-size:.65rem;color:var(--text-dim);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Edit Contact Info (saves to all permits from this builder)</div>
       <div class="flex flex-wrap items-end gap-3">
