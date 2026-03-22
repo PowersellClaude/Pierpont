@@ -1097,12 +1097,15 @@ async function scrapeContactInfo(websiteUrl, page) {
  */
 async function lookupBuilder(companyName, sharedBrowser, { skipCache = false, builderName = null } = {}) {
   // ── Step 0: Cache check ──
+  let cachedWebsite = null;
   if (!skipCache) {
-    const cached = builderCache.get(companyName);
-    if (cached && (cached.phone || cached.email)) {
-      utils.log(`[BuilderLookup] Cache hit for "${companyName}" => ${cached.phone || 'no phone'}, ${cached.email || 'no email'}`);
+    const cached = builderCache.get(companyName) || builderCache.getWithFuzzy(companyName);
+    if (cached && cached.phone && cached.email) {
+      utils.log(`[BuilderLookup] Cache hit for "${companyName}" => ${cached.phone}, ${cached.email}`);
       return cached;
     }
+    // If cache has website but missing phone/email, use that website as head start
+    if (cached && cached.website) cachedWebsite = cached.website;
   }
 
   // ── Step 1: Buyer list (instant local lookup) ──
@@ -1167,6 +1170,11 @@ async function lookupBuilder(companyName, sharedBrowser, { skipCache = false, bu
     // Harvest snippet contacts (phone/email Google already shows)
     addContact(searchResult.snippetPhones, searchResult.snippetEmails, 'google-snippet');
     if (searchResult.website) found.website = searchResult.website;
+    // Use cached website (e.g. from HBA directory) if Google didn't find one
+    if (!found.website && cachedWebsite) {
+      found.website = cachedWebsite;
+      utils.log(`[BuilderLookup] Using cached website for "${companyName}": ${cachedWebsite}`);
+    }
 
     if (searchResult.snippetPhones.length || searchResult.snippetEmails.length) {
       utils.log(`[BuilderLookup] Google snippets for "${companyName}": ${searchResult.snippetPhones.length} phone(s), ${searchResult.snippetEmails.length} email(s)`);
